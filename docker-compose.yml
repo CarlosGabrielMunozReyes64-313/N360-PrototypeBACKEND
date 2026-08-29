@@ -1,0 +1,20 @@
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: nexus360
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - nexus360_pgdata:/var/lib/postgresql/data
+      # Los scripts en db/ se ejecutan una sola vez, en orden alfabético,
+      # la PRIMERA vez que se crea el volumen (001_schema.sql, luego
+      # 002_role_password.sql). Si ya existía el volumen, bórralo con
+      # `docker compose down -v` para que vuelvan a correr.
+      - ./db:/docker-entrypoint-initdb.d
+
+volumes:
+  nexus360_pgdata:

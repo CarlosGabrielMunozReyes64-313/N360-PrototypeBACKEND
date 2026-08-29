@@ -1,0 +1,9 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+# 0.31.0 es la primera versión de asyncpg con wheels precompilados para
+# Python 3.14 (antes solo había hasta 3.13, y compilarla desde código
+# fuente falla en 3.14 por cambios internos en la C API de Python).
+asyncpg>=0.31.0
+pydantic>=2.10
+pydantic-settings>=2.6
+email-validator>=2.2

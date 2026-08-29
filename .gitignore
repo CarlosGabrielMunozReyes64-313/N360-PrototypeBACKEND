@@ -1,0 +1,18 @@
+# entorno virtual
+.venv/
+venv/
+
+# python
+__pycache__/
+*.pyc
+
+# variables de entorno — AQUÍ VIVE LA CONTRASEÑA DE LA BASE DE DATOS
+.env
+
+# logs
+*.log
+
+# editor / OS
+.vscode/
+.idea/
+.DS_Store
