@@ -214,7 +214,7 @@ BEGIN
     r := suma % 11;
     RETURN (CASE WHEN r > 1 THEN 11 - r ELSE r END)::TEXT;
 END;
-$$ LANGUAGE plpgsql IMMUTABLE SET search_path = nexus360, pg_temp;
+$$ LANGUAGE plpgsql IMMUTABLE SET search_path = nexus360, extensions, pg_temp;
 
 ALTER TABLE empresa
     ADD CONSTRAINT chk_empresa_dv CHECK (dv = nexus360.calcular_dv(nit));
@@ -306,7 +306,7 @@ BEGIN
     END IF;
     RETURN NULL;
 END;
-$$ LANGUAGE plpgsql SET search_path = nexus360, pg_temp;
+$$ LANGUAGE plpgsql SET search_path = nexus360, extensions, pg_temp;
 
 CREATE CONSTRAINT TRIGGER trg_suma_pesos_secciones
     AFTER INSERT OR UPDATE OR DELETE ON seccion
@@ -326,7 +326,7 @@ BEGIN
     END IF;
     RETURN NULL;
 END;
-$$ LANGUAGE plpgsql SET search_path = nexus360, pg_temp;
+$$ LANGUAGE plpgsql SET search_path = nexus360, extensions, pg_temp;
 
 CREATE CONSTRAINT TRIGGER trg_suma_pesos_preguntas
     AFTER INSERT OR UPDATE OR DELETE ON pregunta
@@ -349,7 +349,7 @@ BEGIN
     END IF;
     RETURN NULL;
 END;
-$$ LANGUAGE plpgsql SET search_path = nexus360, pg_temp;
+$$ LANGUAGE plpgsql SET search_path = nexus360, extensions, pg_temp;
 
 CREATE CONSTRAINT TRIGGER trg_suma_pesos_dimension
     AFTER INSERT OR UPDATE OR DELETE ON dimension
@@ -369,7 +369,7 @@ BEGIN
     END IF;
     RETURN NULL;
 END;
-$$ LANGUAGE plpgsql SET search_path = nexus360, pg_temp;
+$$ LANGUAGE plpgsql SET search_path = nexus360, extensions, pg_temp;
 
 CREATE CONSTRAINT TRIGGER trg_suma_pesos_sector
     AFTER INSERT OR UPDATE OR DELETE ON peso_sector_materia
@@ -454,7 +454,7 @@ $$;
 CREATE OR REPLACE FUNCTION nexus360.rol_usuario_actual()
 RETURNS TEXT
 LANGUAGE sql STABLE SECURITY DEFINER
-SET search_path = nexus360, pg_temp
+SET search_path = nexus360, extensions, pg_temp
 AS $$
     SELECT rol FROM nexus360.usuario
      WHERE usuario_id = nexus360.current_usuario_id()
@@ -476,7 +476,7 @@ ALTER TABLE empresa ALTER COLUMN creado_por SET DEFAULT nexus360.current_usuario
 CREATE OR REPLACE FUNCTION nexus360.empresa_visible(p_empresa_id UUID)
 RETURNS BOOLEAN
 LANGUAGE sql STABLE
-SET search_path = nexus360, pg_temp
+SET search_path = nexus360, extensions, pg_temp
 AS $$
     SELECT nexus360.rol_usuario_actual() = 'admin'
         OR EXISTS (
@@ -672,7 +672,7 @@ REVOKE UPDATE (creado_por) ON empresa FROM nexus360_app;
 CREATE OR REPLACE FUNCTION nexus360.auto_vincular_usuario_empresa()
 RETURNS TRIGGER
 LANGUAGE plpgsql SECURITY DEFINER
-SET search_path = nexus360, pg_temp
+SET search_path = nexus360, extensions, pg_temp
 AS $$
 BEGIN
     IF nexus360.current_usuario_id() IS NOT NULL THEN
@@ -703,7 +703,7 @@ CREATE OR REPLACE FUNCTION nexus360.registrar_usuario(
 )
 RETURNS UUID
 LANGUAGE plpgsql SECURITY DEFINER
-SET search_path = nexus360, pg_temp
+SET search_path = nexus360, extensions, pg_temp
 AS $$
 DECLARE
     v_usuario_id UUID;
@@ -737,7 +737,7 @@ CREATE OR REPLACE FUNCTION nexus360.iniciar_sesion(
 )
 RETURNS TABLE (usuario_id UUID, rol TEXT, token TEXT, expira_en TIMESTAMPTZ, error TEXT)
 LANGUAGE plpgsql SECURITY DEFINER
-SET search_path = nexus360, pg_temp
+SET search_path = nexus360, extensions, pg_temp
 AS $$
 DECLARE
     v_usuario  nexus360.usuario%ROWTYPE;
@@ -795,7 +795,7 @@ $$;
 CREATE OR REPLACE FUNCTION nexus360.validar_sesion(p_token TEXT)
 RETURNS UUID
 LANGUAGE sql STABLE SECURITY DEFINER
-SET search_path = nexus360, pg_temp
+SET search_path = nexus360, extensions, pg_temp
 AS $$
     SELECT s.usuario_id FROM nexus360.sesion s
      WHERE s.token_hash = encode(digest(p_token, 'sha256'), 'hex')
@@ -806,7 +806,7 @@ $$;
 CREATE OR REPLACE FUNCTION nexus360.cerrar_sesion(p_token TEXT)
 RETURNS VOID
 LANGUAGE sql SECURITY DEFINER
-SET search_path = nexus360, pg_temp
+SET search_path = nexus360, extensions, pg_temp
 AS $$
     UPDATE nexus360.sesion
        SET revocado_en = now()
@@ -820,7 +820,7 @@ $$;
 CREATE OR REPLACE FUNCTION nexus360.cambiar_rol_usuario(p_usuario_id UUID, p_nuevo_rol TEXT)
 RETURNS VOID
 LANGUAGE plpgsql SECURITY DEFINER
-SET search_path = nexus360, pg_temp
+SET search_path = nexus360, extensions, pg_temp
 AS $$
 BEGIN
     IF nexus360.rol_usuario_actual() <> 'admin' THEN
