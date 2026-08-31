@@ -30,6 +30,17 @@ class UsuarioOut(BaseModel):
     ultimo_login_en: datetime | None
 
 
+class ActualizarPerfilIn(BaseModel):
+    """Ambos campos opcionales: se puede mandar solo el que cambió."""
+    nombre: str | None = Field(default=None, min_length=2, max_length=200)
+    email: EmailStr | None = None
+
+
+class CambiarPasswordIn(BaseModel):
+    password_actual: str = Field(min_length=1, max_length=200)
+    password_nueva: str = Field(min_length=8, max_length=200)
+
+
 class SesionOut(BaseModel):
     token: str
     expira_en: datetime

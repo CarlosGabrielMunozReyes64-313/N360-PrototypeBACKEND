@@ -3,7 +3,9 @@ from fastapi import APIRouter, Depends, Request, status
 
 from ..db import fijar_usuario_actual, get_conn
 from ..errors import ApiError, desde_postgres
-from ..schemas import LoginIn, MeOut, RegistroIn, SesionOut, UsuarioOut
+from ..schemas import (
+    ActualizarPerfilIn, CambiarPasswordIn, LoginIn, MeOut, RegistroIn, SesionOut, UsuarioOut,
+)
 from ..security import obtener_ip, obtener_user_agent, requerir_token
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -140,3 +142,64 @@ async def me(
         usuario = await _usuario_actual(conn, usuario_id)
 
     return MeOut(usuario=usuario)
+
+
+@router.patch("/me", response_model=MeOut)
+async def actualizar_perfil(
+    payload: ActualizarPerfilIn,
+    token: str = Depends(requerir_token),
+    conn: asyncpg.Connection = Depends(get_conn),
+):
+    """Cambia nombre y/o correo. La contraseña NUNCA pasa por aquí (ver
+    /auth/change-password) — password_hash está deliberadamente fuera del
+    GRANT UPDATE de esta tabla, por diseño del schema."""
+    if payload.nombre is None and payload.email is None:
+        raise ApiError(status.HTTP_422_UNPROCESSABLE_ENTITY, "VALIDACION", "Nada que actualizar.")
+
+    async with conn.transaction():
+        usuario_id = await conn.fetchval("SELECT nexus360.validar_sesion($1)", token)
+        if usuario_id is None:
+            raise ApiError(status.HTTP_401_UNAUTHORIZED, "CREDENCIALES_INVALIDAS", "La sesión no es válida o expiró.")
+        await fijar_usuario_actual(conn, usuario_id)
+
+        try:
+            await conn.execute(
+                """
+                UPDATE nexus360.usuario
+                   SET nombre = COALESCE($2, nombre),
+                       email  = COALESCE($3, email)
+                 WHERE usuario_id = $1
+                """,
+                usuario_id, payload.nombre, payload.email,
+            )
+        except asyncpg.UniqueViolationError as exc:
+            raise ApiError(
+                status.HTTP_409_CONFLICT, "EMAIL_YA_REGISTRADO", "Ya existe una cuenta con ese correo.",
+            ) from exc
+
+        usuario = await _usuario_actual(conn, usuario_id)
+
+    return MeOut(usuario=usuario)
+
+
+@router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)
+async def cambiar_password(
+    payload: CambiarPasswordIn,
+    token: str = Depends(requerir_token),
+    conn: asyncpg.Connection = Depends(get_conn),
+):
+    async with conn.transaction():
+        usuario_id = await conn.fetchval("SELECT nexus360.validar_sesion($1)", token)
+        if usuario_id is None:
+            raise ApiError(status.HTTP_401_UNAUTHORIZED, "CREDENCIALES_INVALIDAS", "La sesión no es válida o expiró.")
+        await fijar_usuario_actual(conn, usuario_id)
+
+        try:
+            await conn.fetchval(
+                "SELECT nexus360.cambiar_password_usuario($1, $2)",
+                payload.password_actual, payload.password_nueva,
+            )
+        except asyncpg.PostgresError as exc:
+            raise desde_postgres(exc) from exc
+
+    return None

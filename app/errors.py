@@ -25,6 +25,12 @@ def desde_postgres(exc: asyncpg.PostgresError) -> ApiError:
     if "contraseña debe tener" in mensaje or "Correo electrónico inválido" in mensaje:
         return ApiError(status.HTTP_422_UNPROCESSABLE_ENTITY, "VALIDACION", mensaje)
 
+    if "contraseña actual no es correcta" in mensaje:
+        return ApiError(status.HTTP_401_UNAUTHORIZED, "CREDENCIALES_INVALIDAS", mensaje)
+
+    if "No hay una sesión activa" in mensaje:
+        return ApiError(status.HTTP_401_UNAUTHORIZED, "CREDENCIALES_INVALIDAS", mensaje)
+
     return ApiError(
         status.HTTP_500_INTERNAL_SERVER_ERROR,
         "DESCONOCIDO",
