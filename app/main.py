@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from .config import get_settings
 from .db import crear_pool
 from .errors import ApiError
-from .routers import auth
+from .routers import admin, auth
 
 logger = logging.getLogger("nexus360")
 
@@ -38,25 +38,19 @@ app.add_middleware(
 )
 
 app.include_router(auth.router, prefix="/api")
+app.include_router(admin.router, prefix="/api")
 
 
 @app.exception_handler(ApiError)
 async def api_error_handler(_: Request, exc: ApiError) -> JSONResponse:
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={"codigo": exc.codigo, "mensaje": exc.mensaje},
-    )
+    return JSONResponse(status_code=exc.status_code, content={"codigo": exc.codigo, "mensaje": exc.mensaje})
 
 
 @app.exception_handler(RequestValidationError)
-async def validation_error_handler(
-    _: Request, exc: RequestValidationError
-) -> JSONResponse:
+async def validation_error_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
     primero = exc.errors()[0] if exc.errors() else None
     mensaje = primero["msg"] if primero else "Datos inválidos."
-    return JSONResponse(
-        status_code=422, content={"codigo": "VALIDACION", "mensaje": mensaje}
-    )
+    return JSONResponse(status_code=422, content={"codigo": "VALIDACION", "mensaje": mensaje})
 
 
 @app.exception_handler(Exception)
@@ -80,6 +74,4 @@ async def salud(request: Request):
             await conn.fetchval("SELECT 1")
         return {"estado": "ok", "db": "ok"}
     except Exception:
-        return JSONResponse(
-            status_code=503, content={"estado": "error", "db": "sin_conexion"}
-        )
+        return JSONResponse(status_code=503, content={"estado": "error", "db": "sin_conexion"})

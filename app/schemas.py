@@ -41,6 +41,45 @@ class CambiarPasswordIn(BaseModel):
     password_nueva: str = Field(min_length=8, max_length=200)
 
 
+# ---- Solo para /api/admin/* ----
+
+class UsuarioAdminOut(BaseModel):
+    """Vista de usuario para el panel de admin — incluye campos que un
+    usuario normal nunca ve de sí mismo (intentos_fallidos, bloqueado_hasta)."""
+    usuario_id: UUID
+    email: str
+    nombre: str
+    rol: str
+    activo: bool
+    intentos_fallidos: int
+    bloqueado_hasta: datetime | None
+    email_verificado_en: datetime | None
+    ultimo_login_en: datetime | None
+    creado_en: datetime
+
+
+class CambiarEstadoIn(BaseModel):
+    activo: bool
+
+
+class CambiarRolIn(BaseModel):
+    rol: Literal["empresa", "admin"]
+
+
+class RestablecerPasswordAdminIn(BaseModel):
+    password_nueva: str = Field(min_length=8, max_length=200)
+
+
+class SesionAdminOut(BaseModel):
+    sesion_id: UUID
+    usuario_id: UUID
+    creado_en: datetime
+    expira_en: datetime
+    revocado_en: datetime | None
+    ip_origen: str | None
+    user_agent: str | None
+
+
 class SesionOut(BaseModel):
     token: str
     expira_en: datetime
