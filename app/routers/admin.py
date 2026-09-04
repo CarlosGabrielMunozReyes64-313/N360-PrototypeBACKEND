@@ -7,9 +7,10 @@ from fastapi import APIRouter, Depends, status
 from ..db import fijar_usuario_actual, get_conn
 from ..errors import ApiError, desde_postgres
 from ..schemas import (
-    ActividadUsuarioOut, CambiarEstadoIn, CambiarRolIn, DiagnosticoActividadOut,
-    EliminacionOut, EmpresaActividadOut, RestablecerPasswordAdminIn,
-    ResumenSesionesOut, SesionAdminOut, TamizajeActividadOut, UsuarioAdminOut,
+    ActividadUsuarioOut, CambiarEstadoIn, CambiarRolIn, ConteoEstadoOut, ConteoSectorOut,
+    ConteoTamanoOut, DiagnosticoActividadOut, EliminacionOut, EmpresaActividadOut,
+    EmpresaDetalleOut, EstadisticasOut, PromedioDimensionOut, RestablecerPasswordAdminIn,
+    ResumenGeneralOut, ResumenSesionesOut, SesionAdminOut, TamizajeActividadOut, UsuarioAdminOut,
 )
 from ..security import requerir_token
 
@@ -193,6 +194,146 @@ async def restaurar_usuario(usuario_id: UUID, conn: asyncpg.Connection = Depends
         raise desde_postgres(exc) from exc
 
     return await _leer_usuario(conn, usuario_id)
+
+
+@router.get("/estadisticas", response_model=EstadisticasOut)
+async def estadisticas(conn: asyncpg.Connection = Depends(requerir_admin)):
+    """Vista agregada para el panel: conteos generales y distribuciones.
+
+    Todas las consultas excluyen empresas archivadas (archivado_en NOT
+    NULL): son las que ya no cuentan como vigentes, igual que una cuenta
+    archivada no cuenta como usuario activo.
+    """
+    resumen = await conn.fetchrow(
+        """
+        SELECT
+            (SELECT count(*) FROM nexus360.empresa WHERE archivado_en IS NULL) AS empresas,
+            (SELECT count(*) FROM nexus360.usuario WHERE archivado_en IS NULL) AS usuarios,
+            (SELECT count(*) FROM nexus360.diagnostico d
+               JOIN nexus360.empresa e ON e.empresa_id = d.empresa_id
+              WHERE e.archivado_en IS NULL) AS diagnosticos_totales,
+            (SELECT count(*) FROM nexus360.diagnostico d
+               JOIN nexus360.empresa e ON e.empresa_id = d.empresa_id
+              WHERE e.archivado_en IS NULL AND d.estado = 'completado') AS diagnosticos_completados
+        """
+    )
+
+    por_sector = await conn.fetch(
+        """
+        SELECT s.sector_id, s.nombre, count(e.empresa_id) AS total
+          FROM nexus360.sector s
+          LEFT JOIN nexus360.empresa e ON e.sector_id = s.sector_id AND e.archivado_en IS NULL
+         GROUP BY s.sector_id, s.nombre
+        HAVING count(e.empresa_id) > 0
+         ORDER BY total DESC
+        """
+    )
+
+    # "Tamaño" es del ciclo de tamizaje, no de la empresa: una empresa
+    # puede tener ciclos de años distintos, así que se cuenta solo el
+    # más reciente de cada una (DISTINCT ON), para no contar dos veces a
+    # quien ya hizo el tamizaje de este año y del pasado.
+    por_tamano = await conn.fetch(
+        """
+        SELECT tamano, count(*) AS total
+          FROM (
+              SELECT DISTINCT ON (c.empresa_id) c.tamano
+                FROM nexus360.ciclo_tamizaje c
+                JOIN nexus360.empresa e ON e.empresa_id = c.empresa_id
+               WHERE e.archivado_en IS NULL
+               ORDER BY c.empresa_id, c.anio DESC, c.creado_en DESC
+          ) ultimo
+         GROUP BY tamano
+         ORDER BY total DESC
+        """
+    )
+
+    # Aquí sí se cuenta cada diagnóstico (no solo el último): la pregunta
+    # es "cuántos diagnósticos hay en cada estado", no "en qué estado
+    # está cada empresa ahora mismo".
+    por_estado = await conn.fetch(
+        """
+        SELECT d.formato_id, d.estado, count(*) AS total
+          FROM nexus360.diagnostico d
+          JOIN nexus360.empresa e ON e.empresa_id = d.empresa_id
+         WHERE e.archivado_en IS NULL
+         GROUP BY d.formato_id, d.estado
+         ORDER BY d.formato_id, d.estado
+        """
+    )
+
+    promedio_dimension = await conn.fetch(
+        """
+        SELECT dim.formato_id, dim.numero, dim.nombre AS dimension,
+               avg(r.valor)::float8 AS promedio, count(r.respuesta_id) AS respuestas
+          FROM nexus360.respuesta r
+          JOIN nexus360.pregunta p  ON p.pregunta_id = r.pregunta_id
+          JOIN nexus360.seccion sec ON sec.seccion_id = p.seccion_id
+          JOIN nexus360.dimension dim ON dim.dimension_id = sec.dimension_id
+          JOIN nexus360.diagnostico d ON d.diagnostico_id = r.diagnostico_id
+          JOIN nexus360.empresa e ON e.empresa_id = d.empresa_id
+         WHERE r.es_na = FALSE
+           AND d.estado <> 'archivado'
+           AND e.archivado_en IS NULL
+         GROUP BY dim.formato_id, dim.numero, dim.nombre
+         ORDER BY dim.formato_id, dim.numero
+        """
+    )
+
+    return EstadisticasOut(
+        resumen=ResumenGeneralOut(**dict(resumen)),
+        empresas_por_sector=[ConteoSectorOut(**dict(f)) for f in por_sector],
+        empresas_por_tamano=[ConteoTamanoOut(**dict(f)) for f in por_tamano],
+        diagnosticos_por_estado=[ConteoEstadoOut(**dict(f)) for f in por_estado],
+        promedio_por_dimension=[PromedioDimensionOut(**dict(f)) for f in promedio_dimension],
+    )
+
+
+@router.get("/empresas", response_model=list[EmpresaDetalleOut])
+async def listar_empresas_detalle(conn: asyncpg.Connection = Depends(requerir_admin)):
+    """Una fila por empresa activa: su perfil, el tamizaje de su ciclo
+    más reciente, y el estado actual de cada formato en ese ciclo.
+
+    `ultimo_ciclo` toma, por empresa, el ciclo del año más reciente
+    (DISTINCT ON). `iso26000_estado` y `ley2173_estado` toman, dentro de
+    ESE ciclo, el diagnóstico más nuevo de cada formato — puede haber
+    más de uno a lo largo del tiempo (un 'archivado' viejo y un
+    'completado' nuevo), y lo que importa para este reporte es el
+    estado vigente, no el historial completo.
+    """
+    filas = await conn.fetch(
+        """
+        WITH ultimo_ciclo AS (
+            SELECT DISTINCT ON (empresa_id)
+                   ciclo_id, empresa_id, anio, tamano, empleados,
+                   areas_de_vida, ciclo_previo, comunidades_etnicas, consumidor_final
+              FROM nexus360.ciclo_tamizaje
+             ORDER BY empresa_id, anio DESC, creado_en DESC
+        ),
+        ultimo_diagnostico AS (
+            SELECT DISTINCT ON (ciclo_id, formato_id)
+                   ciclo_id, formato_id, estado
+              FROM nexus360.diagnostico
+             ORDER BY ciclo_id, formato_id, creado_en DESC
+        )
+        SELECT
+            e.empresa_id, e.razon_social, e.nit, e.dv,
+            e.sector_id, sec.nombre AS sector_nombre,
+            e.municipio, e.departamento, e.creado_en,
+            uc.anio, uc.tamano, uc.empleados, uc.areas_de_vida,
+            uc.ciclo_previo, uc.comunidades_etnicas, uc.consumidor_final,
+            iso.estado AS iso26000_estado,
+            ley.estado AS ley2173_estado
+          FROM nexus360.empresa e
+          JOIN nexus360.sector sec ON sec.sector_id = e.sector_id
+          LEFT JOIN ultimo_ciclo uc ON uc.empresa_id = e.empresa_id
+          LEFT JOIN ultimo_diagnostico iso ON iso.ciclo_id = uc.ciclo_id AND iso.formato_id = 'iso26000'
+          LEFT JOIN ultimo_diagnostico ley ON ley.ciclo_id = uc.ciclo_id AND ley.formato_id = 'ley2173'
+         WHERE e.archivado_en IS NULL
+         ORDER BY e.creado_en DESC
+        """
+    )
+    return [EmpresaDetalleOut(**dict(f)) for f in filas]
 
 
 @router.get("/usuarios/{usuario_id}/actividad", response_model=ActividadUsuarioOut)

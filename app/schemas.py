@@ -147,6 +147,73 @@ class DiagnosticoActividadOut(BaseModel):
     ultima_respuesta: datetime | None
 
 
+# ---- Solo para /api/admin/estadisticas y /api/admin/empresas ----
+
+class ResumenGeneralOut(BaseModel):
+    empresas: int
+    usuarios: int
+    diagnosticos_totales: int
+    diagnosticos_completados: int
+
+
+class ConteoSectorOut(BaseModel):
+    sector_id: str
+    nombre: str
+    total: int
+
+
+class ConteoTamanoOut(BaseModel):
+    tamano: str
+    total: int
+
+
+class ConteoEstadoOut(BaseModel):
+    formato_id: str
+    estado: str
+    total: int
+
+
+class PromedioDimensionOut(BaseModel):
+    formato_id: str
+    numero: str
+    dimension: str
+    promedio: float
+    respuestas: int
+
+
+class EstadisticasOut(BaseModel):
+    resumen: ResumenGeneralOut
+    empresas_por_sector: list[ConteoSectorOut]
+    empresas_por_tamano: list[ConteoTamanoOut]
+    diagnosticos_por_estado: list[ConteoEstadoOut]
+    promedio_por_dimension: list[PromedioDimensionOut]
+
+
+class EmpresaDetalleOut(BaseModel):
+    """Una fila por empresa activa, con el tamizaje de su ciclo más
+    reciente y el estado actual de cada formato en ese ciclo. Si la
+    empresa no tiene ningún ciclo registrado, los campos de tamizaje y
+    diagnóstico quedan en None: no se inventa un valor por defecto."""
+    empresa_id: UUID
+    razon_social: str
+    nit: str
+    dv: str
+    sector_id: str
+    sector_nombre: str
+    municipio: str
+    departamento: str | None
+    creado_en: datetime
+    anio: int | None
+    tamano: str | None
+    empleados: int | None
+    areas_de_vida: str | None
+    ciclo_previo: bool | None
+    comunidades_etnicas: bool | None
+    consumidor_final: bool | None
+    iso26000_estado: str | None
+    ley2173_estado: str | None
+
+
 class ActividadUsuarioOut(BaseModel):
     """Todo lo que el sistema sabe del paso de un usuario por la
     plataforma: sus sesiones y su rastro en el diagnóstico."""
