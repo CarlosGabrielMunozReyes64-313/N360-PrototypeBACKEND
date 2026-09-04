@@ -18,9 +18,17 @@ app/
   schemas.py      # modelos Pydantic (mismo contrato que src/auth/types.ts del front)
   errors.py       # ApiError uniforme {codigo, mensaje}
   routers/auth.py # POST /register, /login, /logout, GET /me
+  routers/admin.py # /admin/usuarios (listar, estado, rol, password,
+                   #   DELETE eliminar, POST restaurar) y /admin/sesiones
 db/
   001_schema.sql          # copia de nexus360_schema.sql
   002_role_password.sql   # fija password del rol nexus360_app (dev)
+  003_cambiar_password.sql        # cambio de contraseña por el propio usuario
+  004_admin.sql                   # desbloqueo, reset de password, sesiones
+  005_admin_eliminar_usuario.sql  # eliminar/restaurar cuentas + validar_sesion
+                                  #   endurecida (mira activo y archivado_en)
+  006_historial_sesiones.sql      # motivo de cierre de sesión, resumen por
+                                  #   usuario y SELECT sobre `formato`
 main.py           # `uvicorn main:app` (reexporta app/main.py)
 ```
 
@@ -42,6 +50,10 @@ contraseña del rol de aplicación) automáticamente **la primera vez**.
 createdb nexus360
 psql nexus360 -f db/001_schema.sql
 psql nexus360 -f db/002_role_password.sql   # o corre tu propio ALTER ROLE
+psql nexus360 -f db/003_cambiar_password.sql
+psql nexus360 -f db/004_admin.sql
+psql nexus360 -f db/005_admin_eliminar_usuario.sql
+psql nexus360 -f db/006_historial_sesiones.sql
 ```
 
 > ⚠️ `002_role_password.sql` trae una contraseña de ejemplo
@@ -115,3 +127,55 @@ Estos cuatro endpoints ya cubren el login/register real. El resto del
 esquema (empresa, ciclo_tamizaje, diagnostico, respuesta, evidencia) queda
 listo para exponerse en nuevos routers cuando avances con esa parte del
 front — mismo patrón: RLS + `fijar_usuario_actual()` en cada request.
+
+
+## Eliminación de cuentas (005)
+
+`DELETE /api/admin/usuarios/{id}` no siempre borra. Sigue la regla de
+borrado del modelo v3.1:
+
+- **Borrado físico** si la cuenta no dejó rastro: nunca creó una empresa,
+  no está vinculada a ninguna, y no respondió preguntas.
+- **Archivado** (`archivado_en = now()`, `activo = false`) en cualquier
+  otro caso, para no dejar en NULL `empresa.creado_por` ni
+  `respuesta.respondido_por` y perder la trazabilidad de quién
+  autoevaluó qué.
+
+La respuesta trae `modo: 'fisico' | 'archivado'` para que el panel diga
+qué pasó de verdad. `?conservar_historial=true` fuerza el archivado.
+
+Guardas: solo admin; nadie se elimina a sí mismo; no se puede eliminar al
+último administrador activo; y una cuenta ya eliminada responde 409.
+
+Al eliminar (en ambos modos) se revocan las sesiones vivas del usuario.
+Además, 005 reemplaza `validar_sesion()` para que también exija que el
+usuario esté activo y no archivado: antes, desactivar una cuenta no
+surtía efecto hasta que expirara su token (12 h).
+
+`POST /api/admin/usuarios/{id}/restaurar` deshace un archivado, salvo que
+otra cuenta activa ya haya tomado ese correo (el archivado lo libera).
+
+
+## Actividad de un usuario (006)
+
+`GET /api/admin/usuarios/{id}/actividad` devuelve, en un solo viaje, todo
+lo que el sistema sabe del paso de esa persona por la plataforma:
+
+- **sesiones**: cuándo entró, cuándo se cerró y por qué. 006 agrega
+  `sesion.revocado_motivo` con tres valores — `logout` (el usuario salió),
+  `admin` (se la revocaron) y `eliminacion` (se eliminó la cuenta) —
+  porque antes las tres cosas escribían la misma marca en `revocado_en`.
+  Las sesiones cerradas antes de la migración quedan en `NULL`: el dato no
+  existe y no se inventa.
+- **empresas** a las que está vinculada, marcando cuáles creó.
+- **tamizajes**: los ciclos de sus empresas. El esquema guarda solo
+  `creado_en`, así que no hay historial de ediciones ni autor del cambio.
+- **diagnosticos**: Formato 01 y 02 con estado, apertura, cierre y cuántas
+  de las respuestas son suyas frente al total del diagnóstico.
+
+`GET /api/admin/sesiones/resumen` da el conteo por usuario (total, activas,
+última entrada) para la lista, sin traer las sesiones completas.
+
+Mientras no existan los endpoints que guardan empresa, tamizaje y
+diagnósticos, esas tres secciones responden vacías: las tablas están, pero
+nadie escribe en ellas todavía.
