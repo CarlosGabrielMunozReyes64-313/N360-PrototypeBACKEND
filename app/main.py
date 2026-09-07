@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from .config import get_settings
 from .db import crear_pool
 from .errors import ApiError
-from .routers import admin, auth
+from .routers import admin, auth, empresa
 
 logger = logging.getLogger("nexus360")
 
@@ -39,6 +39,7 @@ app.add_middleware(
 
 app.include_router(auth.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
+app.include_router(empresa.router, prefix="/api")
 
 
 @app.exception_handler(ApiError)
