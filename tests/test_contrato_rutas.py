@@ -10,7 +10,8 @@ import pytest
 from app.main import app
 
 # Cada entrada es (método, ruta) tal como la llama el frontend.
-# Fuente: src/auth/api.ts, src/auth/adminApi.ts, src/auth/empresaApi.ts
+# Fuente: src/auth/api.ts, src/auth/adminApi.ts, src/auth/empresaApi.ts,
+# src/perfil/fotoCache.ts
 RUTAS_QUE_USA_EL_FRONT = [
     ("POST", "/api/auth/register"),
     ("POST", "/api/auth/login"),
@@ -19,6 +20,11 @@ RUTAS_QUE_USA_EL_FRONT = [
     ("GET", "/api/empresa/mio"),
     ("PUT", "/api/empresa/mio"),
     ("PUT", "/api/empresa/mio/diagnosticos/{formato_id}/respuestas"),
+    ("PATCH", "/api/auth/me"),
+    ("POST", "/api/auth/change-password"),
+    ("PUT", "/api/auth/me/foto"),
+    ("DELETE", "/api/auth/me/foto"),
+    ("GET", "/api/usuarios/{usuario_id}/foto"),
 ]
 
 

@@ -1,8 +1,10 @@
 import asyncpg
 from fastapi import APIRouter, Depends, Request, status
+from starlette.concurrency import run_in_threadpool
 
-from ..db import fijar_usuario_actual, get_conn
+from ..db import SQL_FOTO_ACTUALIZADA_EN, fijar_usuario_actual, get_conn
 from ..errors import ApiError, desde_postgres
+from ..imagenes import MAX_BYTES_ENTRADA, ImagenInvalida, procesar_foto_perfil
 from ..schemas import (
     ActualizarPerfilIn, CambiarPasswordIn, LoginIn, MeOut, RegistroIn, SesionOut, UsuarioOut,
 )
@@ -16,9 +18,10 @@ async def _usuario_actual(conn: asyncpg.Connection, usuario_id) -> UsuarioOut:
     fijar_usuario_actual() dentro de la misma transacción: la política
     usuario_select_pol solo deja ver la propia fila (o todas, si admin)."""
     fila = await conn.fetchrow(
-        """
+        f"""
         SELECT usuario_id, email, nombre, rol, activo,
-               email_verificado_en, ultimo_login_en
+               email_verificado_en, ultimo_login_en,
+               {SQL_FOTO_ACTUALIZADA_EN}
           FROM nexus360.usuario
          WHERE usuario_id = $1
         """,
@@ -203,3 +206,115 @@ async def cambiar_password(
             raise desde_postgres(exc) from exc
 
     return None
+
+
+# ---------------------------------------------------------------------
+# Foto de perfil
+# ---------------------------------------------------------------------
+# Sin foto propia, cada usuario usa su foto predeterminada (iniciales
+# sobre un color estable), que dibuja el front: no hay nada que guardar.
+# Leer la foto de cualquier usuario va por GET /usuarios/{id}/foto
+# (ver routers/usuarios.py); aquí solo se cambia o se quita la propia.
+
+
+async def _leer_cuerpo_limitado(request: Request, limite: int) -> bytes:
+    """Lee el cuerpo del request cortando en cuanto pasa `limite`, en vez
+    de cargarlo entero en memoria y medirlo después. Content-Length puede
+    faltar (subidas por partes) o mentir, así que se cuenta lo recibido."""
+    declarado = request.headers.get("content-length")
+    if declarado and declarado.isdigit() and int(declarado) > limite:
+        raise ApiError(
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "VALIDACION",
+            "La imagen es demasiado pesada (máximo 5 MB).",
+        )
+
+    partes: list[bytes] = []
+    recibido = 0
+    async for parte in request.stream():
+        recibido += len(parte)
+        if recibido > limite:
+            raise ApiError(
+                status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "VALIDACION",
+                "La imagen es demasiado pesada (máximo 5 MB).",
+            )
+        partes.append(parte)
+    return b"".join(partes)
+
+
+@router.put("/me/foto", response_model=MeOut)
+async def subir_foto(
+    request: Request,
+    token: str = Depends(requerir_token),
+):
+    """Reemplaza la foto de perfil del usuario en sesión.
+
+    El cuerpo es la imagen en binario (Content-Type: image/webp, image/jpeg
+    o image/png), no un formulario multipart: el front ya la recorta y la
+    manda tal cual. El Content-Type declarado no se usa para nada: el
+    formato real lo decide Pillow al decodificarla.
+
+    A diferencia del resto de rutas, esta no usa la dependencia get_conn:
+    tomaría una conexión del pool durante toda la subida y el procesado
+    de la imagen. Aquí se pide una conexión corta para validar la sesión
+    (así una petición sin sesión no llega a subir megas), se suelta, y se
+    pide otra solo para escribir.
+    """
+    pool: asyncpg.Pool = request.app.state.pool
+
+    async with pool.acquire() as conn:
+        usuario_id = await conn.fetchval("SELECT nexus360.validar_sesion($1)", token)
+    if usuario_id is None:
+        raise ApiError(status.HTTP_401_UNAUTHORIZED, "CREDENCIALES_INVALIDAS", "La sesión no es válida o expiró.")
+
+    datos = await _leer_cuerpo_limitado(request, MAX_BYTES_ENTRADA)
+    try:
+        imagen, mime = await run_in_threadpool(procesar_foto_perfil, datos)
+    except ImagenInvalida as exc:
+        raise ApiError(status.HTTP_422_UNPROCESSABLE_ENTITY, "VALIDACION", str(exc)) from exc
+
+    async with pool.acquire() as conn, conn.transaction():
+        # Se revalida dentro de la transacción que escribe: la sesión pudo
+        # revocarse mientras se subía o procesaba la imagen.
+        usuario_id = await conn.fetchval("SELECT nexus360.validar_sesion($1)", token)
+        if usuario_id is None:
+            raise ApiError(status.HTTP_401_UNAUTHORIZED, "CREDENCIALES_INVALIDAS", "La sesión no es válida o expiró.")
+        await fijar_usuario_actual(conn, usuario_id)
+
+        # clock_timestamp() y no now(): now() es la hora de inicio de la
+        # transacción, y es la versión que usa el front para su caché —
+        # cada cambio debe producir una marca distinta.
+        await conn.execute(
+            """
+            INSERT INTO nexus360.usuario_foto (usuario_id, imagen, mime, actualizado_en)
+            VALUES (nexus360.current_usuario_id(), $1, $2, clock_timestamp())
+            ON CONFLICT (usuario_id) DO UPDATE SET
+                imagen = EXCLUDED.imagen,
+                mime = EXCLUDED.mime,
+                actualizado_en = EXCLUDED.actualizado_en
+            """,
+            imagen, mime,
+        )
+        usuario = await _usuario_actual(conn, usuario_id)
+
+    return MeOut(usuario=usuario)
+
+
+@router.delete("/me/foto", response_model=MeOut)
+async def quitar_foto(
+    token: str = Depends(requerir_token),
+    conn: asyncpg.Connection = Depends(get_conn),
+):
+    """Quita la foto propia: el usuario vuelve a su foto predeterminada.
+    Idempotente — quitarla cuando no hay ninguna no es un error."""
+    async with conn.transaction():
+        usuario_id = await conn.fetchval("SELECT nexus360.validar_sesion($1)", token)
+        if usuario_id is None:
+            raise ApiError(status.HTTP_401_UNAUTHORIZED, "CREDENCIALES_INVALIDAS", "La sesión no es válida o expiró.")
+        await fijar_usuario_actual(conn, usuario_id)
+
+        await conn.execute(
+            "DELETE FROM nexus360.usuario_foto WHERE usuario_id = nexus360.current_usuario_id()"
+        )
+        usuario = await _usuario_actual(conn, usuario_id)
+
+    return MeOut(usuario=usuario)

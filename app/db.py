@@ -38,3 +38,16 @@ async def fijar_usuario_actual(conn: asyncpg.Connection, usuario_id: str) -> Non
     await conn.execute(
         "SELECT set_config('app.current_usuario_id', $1, true)", str(usuario_id)
     )
+
+
+# Columna calculada con la versión de la foto de perfil (NULL = el usuario
+# usa la foto predeterminada). Se usa en los SELECT sobre
+# `FROM nexus360.usuario` (sin alias) tanto en /auth como en /admin, para
+# que ambos devuelvan el mismo campo sin repetir la subconsulta. La tabla
+# usuario_foto tiene RLS: cada quien ve la suya y el admin todas, que es
+# justo lo que cada una de esas consultas necesita.
+SQL_FOTO_ACTUALIZADA_EN = """
+    (SELECT f.actualizado_en
+       FROM nexus360.usuario_foto f
+      WHERE f.usuario_id = nexus360.usuario.usuario_id) AS foto_actualizada_en
+"""

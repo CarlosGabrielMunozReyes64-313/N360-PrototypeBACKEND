@@ -17,7 +17,10 @@ app/
   security.py     # extracción del Bearer token
   schemas.py      # modelos Pydantic (mismo contrato que src/auth/types.ts del front)
   errors.py       # ApiError uniforme {codigo, mensaje}
-  routers/auth.py # POST /register, /login, /logout, GET /me
+  imagenes.py     # normalización de fotos de perfil (Pillow)
+  routers/auth.py # POST /register, /login, /logout, GET /me,
+                  #   PUT/DELETE /me/foto
+  routers/usuarios.py # GET /usuarios/{id}/foto
   routers/admin.py # /admin/usuarios (listar, estado, rol, password,
                    #   DELETE eliminar, POST restaurar) y /admin/sesiones
 db/
@@ -29,6 +32,7 @@ db/
                                   #   endurecida (mira activo y archivado_en)
   006_historial_sesiones.sql      # motivo de cierre de sesión, resumen por
                                   #   usuario y SELECT sobre `formato`
+  008_foto_perfil.sql             # tabla usuario_foto (foto de perfil) + RLS
 main.py           # `uvicorn main:app` (reexporta app/main.py)
 ```
 
@@ -54,7 +58,13 @@ psql nexus360 -f db/003_cambiar_password.sql
 psql nexus360 -f db/004_admin.sql
 psql nexus360 -f db/005_admin_eliminar_usuario.sql
 psql nexus360 -f db/006_historial_sesiones.sql
+psql nexus360 -f db/007_estadisticas_catalogo.sql
+psql nexus360 -f db/008_foto_perfil.sql
 ```
+
+> ⚠️ Si actualizas una base que ya existía, aplica **008 antes de desplegar**
+> esta versión del backend: /me, el login y la lista del admin leen
+> `usuario_foto`, y sin esa tabla responden 500.
 
 > ⚠️ `002_role_password.sql` trae una contraseña de ejemplo
 > (`dev_only_change_me`) solo para desarrollo. En cualquier entorno real,
@@ -99,6 +109,9 @@ directo con estos endpoints:
 | POST   | `/api/auth/login`   | Inicia sesión, devuelve `{token, expira_en, usuario}` |
 | POST   | `/api/auth/logout`  | Revoca el token (`Authorization: Bearer <token>`) |
 | GET    | `/api/auth/me`      | Devuelve el usuario de la sesión activa |
+| PUT    | `/api/auth/me/foto` | Sube/reemplaza la foto de perfil (cuerpo = imagen en binario) |
+| DELETE | `/api/auth/me/foto` | Quita la foto: vuelve a la predeterminada |
+| GET    | `/api/usuarios/{id}/foto` | Devuelve la foto (la propia, o cualquiera si es admin) |
 
 ## Notas de seguridad heredadas del schema
 
@@ -179,3 +192,36 @@ lo que el sistema sabe del paso de esa persona por la plataforma:
 Mientras no existan los endpoints que guardan empresa, tamizaje y
 diagnósticos, esas tres secciones responden vacías: las tablas están, pero
 nadie escribe en ellas todavía.
+
+
+## Foto de perfil (008)
+
+Cada usuario tiene **siempre** una foto: si no subió ninguna, el front
+dibuja la predeterminada (sus iniciales sobre un color que sale de su
+`usuario_id`, así que es estable). No se guarda nada para eso.
+
+Cuando sube una, queda en la tabla `usuario_foto` (aparte de `usuario`,
+para no hacer más pesadas las lecturas de login, /me y la lista del
+admin). `UsuarioOut` y `UsuarioAdminOut` traen `foto_actualizada_en`:
+`null` = foto predeterminada; si no, es la versión de la foto, que el
+front usa para su caché.
+
+- **Subir** — `PUT /api/auth/me/foto` con la imagen en el cuerpo (no
+  multipart). El backend no confía en el cliente: la vuelve a decodificar
+  y codificar con Pillow (`app/imagenes.py`). Así rechaza lo que no es
+  una imagen de verdad (SVG incluido), topa el tamaño (5 MB de entrada,
+  40 MP) contra "bombas" de descompresión, aplica la orientación EXIF y
+  **quita los metadatos (incluida la ubicación GPS)**. Guarda un cuadrado
+  de máx. 512 px en WebP (~20–40 KB). La conexión a la base no se retiene
+  mientras sube el archivo: se valida la sesión, se suelta la conexión, y
+  se toma otra solo para escribir.
+- **Leer** — `GET /api/usuarios/{id}/foto` exige sesión (la foto no es
+  pública). Quién ve qué lo decide el RLS de `usuario_foto`: cada quien la
+  suya y el admin todas. "No tiene foto" y "no puedes verla" responden
+  igual (404), para no revelar qué cuentas existen. Con `?v=<versión>` se
+  marca como caché inmutable; también responde `304` con `If-None-Match`.
+- **Quitar** — `DELETE /api/auth/me/foto`, idempotente.
+
+RLS con FORCE: nadie, ni un admin, puede poner o borrar la foto de otra
+persona. El borrado físico de una cuenta (`admin_eliminar_usuario`) borra
+su foto en cascada; el archivado la conserva, por si se restaura.

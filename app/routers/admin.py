@@ -4,7 +4,7 @@ from uuid import UUID
 import asyncpg
 from fastapi import APIRouter, Depends, status
 
-from ..db import fijar_usuario_actual, get_conn
+from ..db import SQL_FOTO_ACTUALIZADA_EN, fijar_usuario_actual, get_conn
 from ..errors import ApiError, desde_postgres
 from ..schemas import (
     ActividadUsuarioOut, CambiarEstadoIn, CambiarRolIn, ConteoEstadoOut, ConteoSectorOut,
@@ -17,12 +17,12 @@ from ..security import requerir_token
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 # Columnas que ve el panel de admin. Se centraliza para que agregar una
-# (archivado_en) no obligue a tocar cuatro consultas y arriesgar que una
-# quede desalineada con UsuarioAdminOut.
-COLUMNAS_USUARIO = """
+# (archivado_en, foto_actualizada_en) no obligue a tocar cuatro consultas y
+# arriesgar que una quede desalineada con UsuarioAdminOut.
+COLUMNAS_USUARIO = f"""
     usuario_id, email, nombre, rol, activo, intentos_fallidos,
     bloqueado_hasta, email_verificado_en, ultimo_login_en, creado_en,
-    archivado_en
+    archivado_en, {SQL_FOTO_ACTUALIZADA_EN}
 """
 
 

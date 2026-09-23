@@ -28,6 +28,10 @@ class UsuarioOut(BaseModel):
     activo: bool
     email_verificado_en: datetime | None
     ultimo_login_en: datetime | None
+    # Cuándo subió su foto de perfil. None = usa la foto predeterminada
+    # (iniciales), que dibuja el front. El front usa este valor como
+    # versión de la foto para su caché (GET /usuarios/{id}/foto?v=...).
+    foto_actualizada_en: datetime | None = None
 
 
 class ActualizarPerfilIn(BaseModel):
@@ -58,6 +62,7 @@ class UsuarioAdminOut(BaseModel):
     ultimo_login_en: datetime | None
     creado_en: datetime
     archivado_en: datetime | None = None
+    foto_actualizada_en: datetime | None = None
 
 
 class CambiarEstadoIn(BaseModel):
