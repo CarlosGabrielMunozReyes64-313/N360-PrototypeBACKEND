@@ -30,9 +30,15 @@ db/
   004_admin.sql                   # desbloqueo, reset de password, sesiones
   005_admin_eliminar_usuario.sql  # eliminar/restaurar cuentas + validar_sesion
                                   #   endurecida (mira activo y archivado_en)
+  005_catalogo.sql                # catálogo (formatos, dimensiones, preguntas)
+  006_grants_catalogo.sql         # SELECT del catálogo para nexus360_app
   006_historial_sesiones.sql      # motivo de cierre de sesión, resumen por
                                   #   usuario y SELECT sobre `formato`
+  007_estadisticas_catalogo.sql   # estadísticas del panel
   008_foto_perfil.sql             # tabla usuario_foto (foto de perfil) + RLS
+  009_rse_express.sql             # Autodiagnóstico RSE Express: respaldo y
+                                  #   reinicio de tamizajes/diagnósticos, tamizaje
+                                  #   nuevo, respuestas abiertas y catálogo nuevo
 main.py           # `uvicorn main:app` (reexporta app/main.py)
 ```
 
@@ -57,9 +63,12 @@ psql nexus360 -f db/002_role_password.sql   # o corre tu propio ALTER ROLE
 psql nexus360 -f db/003_cambiar_password.sql
 psql nexus360 -f db/004_admin.sql
 psql nexus360 -f db/005_admin_eliminar_usuario.sql
+psql nexus360 -f db/005_catalogo.sql
+psql nexus360 -f db/006_grants_catalogo.sql
 psql nexus360 -f db/006_historial_sesiones.sql
 psql nexus360 -f db/007_estadisticas_catalogo.sql
 psql nexus360 -f db/008_foto_perfil.sql
+psql nexus360 -f db/009_rse_express.sql
 ```
 
 > ⚠️ Si actualizas una base que ya existía, aplica **008 antes de desplegar**
@@ -225,3 +234,126 @@ front usa para su caché.
 RLS con FORCE: nadie, ni un admin, puede poner o borrar la foto de otra
 persona. El borrado físico de una cuenta (`admin_eliminar_usuario`) borra
 su foto en cascada; el archivado la conserva, por si se restaura.
+
+
+## Autodiagnóstico RSE Express (009)
+
+Reemplaza el Formato 01 (ISO 26000, 21 preguntas) y el Formato 02 (Ley
+2173, 26 preguntas) por el Autodiagnóstico RSE Express del Anexo 1 del
+*Protocolo de Validación NEXUS RSE Express + RSE por Retos* (v2, sept. 2026):
+7 materias, 21 preguntas abiertas y un tamizaje nuevo.
+
+### Aplicarlo en una base que ya tiene usuarios
+
+Con el rol dueño del esquema (no `nexus360_app`), **antes** de desplegar
+esta versión del backend:
+
+```bash
+psql "$DATABASE_URL_OWNER" -f db/009_rse_express.sql
+```
+
+Todo corre en una sola transacción: si algo falla, no cambia nada.
+
+- **Se conserva** todo lo de la cuenta: usuarios (nombre, correo,
+  contraseña, rol, foto, sesiones) y empresas (razón social, NIT, DV,
+  sector, municipio, departamento) con sus vínculos.
+- **Se respalda y se retira** lo del instrumento anterior: tamizajes,
+  diagnósticos, respuestas, evidencias y pesos por sector se copian al
+  esquema `nexus360_respaldo` (tablas `*_v1`) y se borran de las tablas
+  vivas. La aplicación no lee ese esquema. Cuando ya no se necesite:
+  `DROP SCHEMA nexus360_respaldo CASCADE;`
+- Los formatos `iso26000` y `ley2173` quedan archivados (no borrados).
+- Es idempotente: si se corre dos veces, la segunda no respalda ni borra
+  nada (detecta que el tamizaje ya tiene la estructura nueva).
+
+Al volver a entrar, `GET /api/empresa/mio` devuelve la empresa con
+`tamizaje: null` y el front pide el tamizaje nuevo con el perfil ya lleno.
+
+### Tamizaje nuevo (`ciclo_tamizaje`)
+
+T1 `tamano` (micro | pequena | mediana | nose) + `ingresos_rango` opcional;
+T2 `personas` y `vinculacion[]` (laboral | servicios | socios | temporada |
+otra) + detalle; T5 `zonas[]` (barrios | veredas | rural | indigenas | afro |
+otras) y/o `territorio`; T6 `clientes` (personas | empresas | publicas |
+mezcla) + detalle. Se retiran empleados, Áreas de Vida, ciclo previo,
+comunidades étnicas y consumidor final.
+
+### Respuesta abierta (`respuesta`, `respuesta_materia`, `diagnostico`)
+
+Cada respuesta guarda `texto`, `ejemplos[]`, `otro_texto` y la etapa:
+`valor` 0–4 (lectura interna de la sección 6.3), `es_na` («No aplica») o
+`es_diferente` («Hacemos algo diferente», sin valor hasta que NEXUS la
+clasifica en `valor_clasificado`; un trigger impide que alguien que no sea
+admin escriba esa columna). `respuesta_materia` guarda «¿Qué le gustaría
+fortalecer?» por materia, y `diagnostico` la pregunta final
+(`comentario_final`) y la matriz de priorización (`priorizacion` JSONB).
+
+### Rutas
+
+| Método | Ruta | Qué hace |
+|---|---|---|
+| GET | `/api/empresa/mio` | perfil + tamizaje vigente + autodiagnóstico (404 solo si no hay empresa) |
+| PUT | `/api/empresa/mio` | crea/actualiza perfil y tamizaje (actualiza el ciclo vigente) |
+| PUT | `/api/empresa/mio/diagnosticos/rse_express/respuestas` | guarda el autodiagnóstico; solo reescribe lo que cambió. Los formatos retirados responden 410 |
+| GET | `/api/admin/empresas/{empresa_id}/diagnostico` | lo que respondió una empresa |
+| PUT | `/api/admin/respuestas/{respuesta_id}/clasificacion` | NEXUS clasifica (0–4 o `null`) una respuesta «Hacemos algo diferente» |
+| GET | `/api/admin/estadisticas` | ahora con `empresas_por_cliente`, `respuestas_por_etapa` e `indicadores` (sección 10) |
+| GET | `/api/admin/empresas` | ahora con el tamizaje nuevo, `perfil_piloto` (10–50 personas) y el avance del autodiagnóstico |
+
+El catálogo de 009 se generó a partir del mismo archivo que
+`src/data/rseExpress.ts` del frontend: si cambia una pregunta, hay que
+cambiarla en los dos lados.
+
+### Si el panel dice «No se pudo conectar con el servidor» o las estadísticas no cargan
+
+Casi siempre es que la base no tiene aplicada `009_rse_express.sql` (el log
+del backend muestra `column "clientes" does not exist` o
+`column "actualizado_en" does not exist`). Desde esta versión:
+
+- Al arrancar, el backend lo detecta y escribe en el log
+  `ESQUEMA DESACTUALIZADO: falta …` con la instrucción.
+- `GET /health` responde 503 con `"esquema": "falta_009"` y la lista de lo
+  que falta.
+- Las rutas responden 503 `ESQUEMA_DESACTUALIZADO` con un mensaje claro, que
+  el panel muestra tal cual. Antes salía un 500 sin cabeceras CORS y el
+  navegador lo reportaba como error de conexión.
+
+Solución: aplicar la migración con el rol dueño del esquema y reiniciar.
+
+```bash
+psql "postgresql://postgres:<clave>@localhost:5432/nexus360" -f db/009_rse_express.sql
+# verificar:
+psql "postgresql://postgres:<clave>@localhost:5432/nexus360" \
+  -c "select column_name from information_schema.columns where table_schema='nexus360' and table_name='ciclo_tamizaje' and column_name='clientes'"
+curl http://localhost:8000/health    # debe decir "esquema": "ok"
+```
+
+### Estadísticas del RSE Express (`GET /api/admin/estadisticas`)
+
+Además de las anteriores: `empresas_por_personas` (rangos de T2; 10–50 es el
+perfil del piloto), `etapas_por_materia` (respuestas por materia y etapa,
+para la gráfica «Etapas»), `practicas_por_materia`, `retos_por_materia`
+(materia de la oportunidad elegida en la matriz de priorización) y
+`alertas` (empresas con cada alerta informativa: SG-SST, datos personales,
+Ley 2173 y comunidades étnicas, con las mismas reglas que ve la empresa).
+
+### Datos de demostración (opcional)
+
+Como 009 reinicia los diagnósticos, el panel queda casi vacío hasta que las
+empresas vuelvan a responder. Para ver las estadísticas y gráficas con
+datos, hay un juego de demostración: 12 empresas ficticias cuyo nombre
+empieza por «DEMO · », con tamizaje, respuestas abiertas, prácticas
+propias (algunas ya clasificadas), «qué le gustaría fortalecer» y matriz de
+priorización. No toca usuarios ni empresas reales.
+
+```bash
+psql "<conexión del dueño>" -f db/demo/demo_rse_express.sql   # crear (se puede repetir)
+psql "<conexión del dueño>" -f db/demo/borrar_demo.sql        # quitar
+```
+
+### Pruebas
+
+`pytest` (48 pruebas: contrato de rutas, validaciones del tamizaje y las
+etapas, y errores con CORS y mensaje de migración pendiente). La migración se probó sobre una base con datos del instrumento
+anterior (dos corridas, conservación de cuentas, respaldo) y sobre una
+instalación desde cero con todas las migraciones.

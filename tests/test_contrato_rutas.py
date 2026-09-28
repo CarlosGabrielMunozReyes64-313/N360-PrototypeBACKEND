@@ -25,6 +25,10 @@ RUTAS_QUE_USA_EL_FRONT = [
     ("PUT", "/api/auth/me/foto"),
     ("DELETE", "/api/auth/me/foto"),
     ("GET", "/api/usuarios/{usuario_id}/foto"),
+    ("GET", "/api/admin/estadisticas"),
+    ("GET", "/api/admin/empresas"),
+    ("GET", "/api/admin/empresas/{empresa_id}/diagnostico"),
+    ("PUT", "/api/admin/respuestas/{respuesta_id}/clasificacion"),
 ]
 
 

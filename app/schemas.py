@@ -121,19 +121,21 @@ class EmpresaActividadOut(BaseModel):
 
 
 class TamizajeActividadOut(BaseModel):
-    """Un ciclo de tamizaje. `creado_en` es la única marca de tiempo que
-    guarda el esquema para el tamizaje: no hay historial de ediciones."""
+    """Un tamizaje «Conozcamos su empresa» (T1, T2, T5 y T6). Se guarda la
+    fecha de creación y la de la última edición, no el historial completo."""
     ciclo_id: UUID
     empresa_id: UUID
     razon_social: str
     anio: int
     tamano: str
-    empleados: int
-    areas_de_vida: str
-    ciclo_previo: bool
-    comunidades_etnicas: bool
-    consumidor_final: bool
+    ingresos_rango: str | None
+    personas: int
+    vinculacion: list[str]
+    zonas: list[str]
+    territorio: str | None
+    clientes: str
     creado_en: datetime
+    actualizado_en: datetime
 
 
 class DiagnosticoActividadOut(BaseModel):
@@ -178,7 +180,21 @@ class ConteoEstadoOut(BaseModel):
     total: int
 
 
+class ConteoClienteOut(BaseModel):
+    """T6 · tipo de clientes: personas, empresas, publicas o mezcla."""
+    clientes: str
+    total: int
+
+
+class ConteoEtapaOut(BaseModel):
+    """Respuestas por etapa: '0'..'4', 'diferente' o 'NA'."""
+    etapa: str
+    total: int
+
+
 class PromedioDimensionOut(BaseModel):
+    """Promedio de la lectura INTERNA 0–4 por materia (uso de NEXUS; a la
+    empresa no se le muestra como puntaje)."""
     formato_id: str
     numero: str
     dimension: str
@@ -186,19 +202,70 @@ class PromedioDimensionOut(BaseModel):
     respuestas: int
 
 
+class ConteoRangoOut(BaseModel):
+    """Empresas por número de personas (T2), en rangos."""
+    rango: str
+    total: int
+
+
+class ConteoMateriaOut(BaseModel):
+    numero: str
+    materia: str
+    total: int
+
+
+class ConteoMateriaEtapaOut(BaseModel):
+    """Respuestas de una materia en una etapa ('0'..'4', 'diferente', 'NA')."""
+    numero: str
+    materia: str
+    etapa: str
+    total: int
+
+
+class AlertasOut(BaseModel):
+    """Empresas con cada alerta informativa (mismas reglas que el front)."""
+    ley2173: int
+    sst: int
+    datos: int
+    territorio: int
+
+
+class IndicadoresDiagnosticoOut(BaseModel):
+    """Indicadores de la sección 10 del protocolo (diagnóstico ajustado y
+    participación). Son conteos descriptivos, no metas."""
+    empresas_con_tamizaje: int
+    empresas_perfil_piloto: int
+    empresas_con_diagnostico: int
+    empresas_con_practicas: int
+    practicas_registradas: int
+    respuestas_diferente: int
+    diferente_sin_clasificar: int
+    respuestas_na: int
+    materias_con_fortalecer: int
+    comentarios_finales: int
+
+
 class EstadisticasOut(BaseModel):
     resumen: ResumenGeneralOut
     empresas_por_sector: list[ConteoSectorOut]
     empresas_por_tamano: list[ConteoTamanoOut]
+    empresas_por_cliente: list[ConteoClienteOut]
     diagnosticos_por_estado: list[ConteoEstadoOut]
+    respuestas_por_etapa: list[ConteoEtapaOut]
     promedio_por_dimension: list[PromedioDimensionOut]
+    indicadores: IndicadoresDiagnosticoOut
+    empresas_por_personas: list[ConteoRangoOut]
+    etapas_por_materia: list[ConteoMateriaEtapaOut]
+    practicas_por_materia: list[ConteoMateriaOut]
+    retos_por_materia: list[ConteoMateriaOut]
+    alertas: AlertasOut
 
 
 class EmpresaDetalleOut(BaseModel):
     """Una fila por empresa activa, con el tamizaje de su ciclo más
-    reciente y el estado actual de cada formato en ese ciclo. Si la
-    empresa no tiene ningún ciclo registrado, los campos de tamizaje y
-    diagnóstico quedan en None: no se inventa un valor por defecto."""
+    reciente y el avance de su autodiagnóstico RSE Express. Si la empresa no
+    tiene tamizaje (p. ej. justo después de la migración 009), los campos de
+    tamizaje y diagnóstico quedan en None: no se inventa un valor."""
     empresa_id: UUID
     razon_social: str
     nit: str
@@ -210,13 +277,21 @@ class EmpresaDetalleOut(BaseModel):
     creado_en: datetime
     anio: int | None
     tamano: str | None
-    empleados: int | None
-    areas_de_vida: str | None
-    ciclo_previo: bool | None
-    comunidades_etnicas: bool | None
-    consumidor_final: bool | None
-    iso26000_estado: str | None
-    ley2173_estado: str | None
+    ingresos_rango: str | None
+    personas: int | None
+    vinculacion: list[str] | None
+    vinculacion_detalle: str | None
+    zonas: list[str] | None
+    territorio: str | None
+    clientes: str | None
+    clientes_detalle: str | None
+    # Criterio de selección del piloto: entre 10 y 50 personas (T2).
+    perfil_piloto: bool | None
+    diagnostico_estado: str | None
+    diagnostico_actualizado_en: datetime | None
+    respuestas_con_etapa: int
+    practicas_registradas: int
+    pendientes_clasificar: int
 
 
 class ActividadUsuarioOut(BaseModel):
@@ -227,6 +302,19 @@ class ActividadUsuarioOut(BaseModel):
     empresas: list[EmpresaActividadOut]
     tamizajes: list[TamizajeActividadOut]
     diagnosticos: list[DiagnosticoActividadOut]
+
+
+class ClasificarIn(BaseModel):
+    """Clasificación de NEXUS para una respuesta «Hacemos algo diferente»:
+    0–4 en la lectura interna, o None para quitarla."""
+    valor: int | None = Field(default=None, ge=0, le=4)
+
+
+class ClasificacionOut(BaseModel):
+    respuesta_id: UUID
+    codigo: str
+    clasificada: int | None
+    clasificado_en: datetime | None
 
 
 class SesionOut(BaseModel):

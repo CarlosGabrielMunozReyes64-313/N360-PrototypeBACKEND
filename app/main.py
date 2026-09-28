@@ -1,6 +1,7 @@
 import logging
 from contextlib import asynccontextmanager
 
+import asyncpg
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,6 +10,7 @@ from fastapi.responses import JSONResponse
 from .config import get_settings
 from .db import crear_pool
 from .errors import ApiError
+from .esquema import CODIGO_ESQUEMA, ERRORES_DE_ESQUEMA, MENSAJE_ESQUEMA, verificar_esquema
 from .routers import admin, auth, empresa, usuarios
 
 logger = logging.getLogger("nexus360")
@@ -18,6 +20,7 @@ logger = logging.getLogger("nexus360")
 async def lifespan(app: FastAPI):
     app.state.pool = await crear_pool()
     logger.info("Pool de PostgreSQL creado.")
+    app.state.esquema = await verificar_esquema(app.state.pool)
     try:
         yield
     finally:
@@ -27,7 +30,52 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="NEXUS 360° API", version="0.1.0", lifespan=lifespan)
 
+
+def respuesta_de_error(exc: Exception) -> JSONResponse:
+    if isinstance(exc, ERRORES_DE_ESQUEMA):
+        logger.error("Consulta contra un esquema desactualizado: %s", exc)
+        return JSONResponse(status_code=503, content={"codigo": CODIGO_ESQUEMA, "mensaje": MENSAJE_ESQUEMA})
+    if isinstance(exc, asyncpg.PostgresError):
+        logger.exception("Error de base de datos no controlado", exc_info=exc)
+    else:
+        logger.exception("Error no controlado", exc_info=exc)
+    return JSONResponse(status_code=500, content={"codigo": "DESCONOCIDO", "mensaje": "Error interno del servidor."})
+
+
+class CapturarErrores:
+    """Convierte cualquier excepción no controlada en una respuesta JSON
+    DENTRO del middleware de CORS. El manejador de `Exception` de FastAPI
+    corre por fuera de CORS: su 500 llega sin Access-Control-Allow-Origin y
+    el navegador lo reporta como «No se pudo conectar con el servidor»,
+    escondiendo el error real."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        iniciada = False
+
+        async def enviar(mensaje):
+            nonlocal iniciada
+            if mensaje["type"] == "http.response.start":
+                iniciada = True
+            await send(mensaje)
+
+        try:
+            await self.app(scope, receive, enviar)
+        except Exception as exc:
+            if iniciada:
+                raise
+            await respuesta_de_error(exc)(scope, receive, send)
+
+
 settings = get_settings()
+# Orden: el último middleware agregado queda por fuera. CapturarErrores se
+# agrega primero para quedar por DENTRO de CORS.
+app.add_middleware(CapturarErrores)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -57,11 +105,8 @@ async def validation_error_handler(_: Request, exc: RequestValidationError) -> J
 
 @app.exception_handler(Exception)
 async def unhandled_error_handler(_: Request, exc: Exception) -> JSONResponse:
-    logger.exception("Error no controlado", exc_info=exc)
-    return JSONResponse(
-        status_code=500,
-        content={"codigo": "DESCONOCIDO", "mensaje": "Error interno del servidor."},
-    )
+    # Último recurso (CapturarErrores atiende casi todo antes, con CORS).
+    return respuesta_de_error(exc)
 
 
 @app.get("/")
@@ -74,6 +119,13 @@ async def salud(request: Request):
     try:
         async with request.app.state.pool.acquire() as conn:
             await conn.fetchval("SELECT 1")
-        return {"estado": "ok", "db": "ok"}
     except Exception:
         return JSONResponse(status_code=503, content={"estado": "error", "db": "sin_conexion"})
+    esquema = await verificar_esquema(request.app.state.pool)
+    request.app.state.esquema = esquema
+    if not esquema["ok"]:
+        return JSONResponse(status_code=503, content={
+            "estado": "error", "db": "ok", "esquema": "falta_009",
+            "faltantes": esquema["faltantes"], "mensaje": MENSAJE_ESQUEMA,
+        })
+    return {"estado": "ok", "db": "ok", "esquema": "ok"}

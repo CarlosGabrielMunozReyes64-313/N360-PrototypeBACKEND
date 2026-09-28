@@ -6,12 +6,16 @@ from fastapi import APIRouter, Depends, status
 
 from ..db import SQL_FOTO_ACTUALIZADA_EN, fijar_usuario_actual, get_conn
 from ..errors import ApiError, desde_postgres
+from ..diagnostico_rse import FORMATO_RSE, diagnostico_vigente_id, leer_diagnostico, ultimo_tamizaje
 from ..schemas import (
-    ActividadUsuarioOut, CambiarEstadoIn, CambiarRolIn, ConteoEstadoOut, ConteoSectorOut,
-    ConteoTamanoOut, DiagnosticoActividadOut, EliminacionOut, EmpresaActividadOut,
-    EmpresaDetalleOut, EstadisticasOut, PromedioDimensionOut, RestablecerPasswordAdminIn,
+    ActividadUsuarioOut, AlertasOut, CambiarEstadoIn, CambiarRolIn, ClasificacionOut, ClasificarIn,
+    ConteoClienteOut, ConteoEstadoOut, ConteoEtapaOut, ConteoMateriaEtapaOut, ConteoMateriaOut,
+    ConteoRangoOut, ConteoSectorOut, ConteoTamanoOut,
+    DiagnosticoActividadOut, EliminacionOut, EmpresaActividadOut, EmpresaDetalleOut,
+    EstadisticasOut, IndicadoresDiagnosticoOut, PromedioDimensionOut, RestablecerPasswordAdminIn,
     ResumenGeneralOut, ResumenSesionesOut, SesionAdminOut, TamizajeActividadOut, UsuarioAdminOut,
 )
+from ..schemas_empresa import EmpresaMiaOut, PerfilOut
 from ..security import requerir_token
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -196,13 +200,46 @@ async def restaurar_usuario(usuario_id: UUID, conn: asyncpg.Connection = Depends
     return await _leer_usuario(conn, usuario_id)
 
 
+# Una práctica registrada (indicador de la sección 10 y de la hipótesis H13):
+# la empresa describió algo que ya hace (texto, ejemplo marcado o «algo
+# diferente») y no lo marcó como «aún no lo hemos abordado» ni «no aplica».
+SQL_ES_PRACTICA = """
+    (coalesce(btrim(r.texto), '') <> '' OR cardinality(r.ejemplos) > 0
+     OR coalesce(btrim(r.otro_texto), '') <> '')
+    AND NOT r.es_na AND (r.es_diferente OR r.valor >= 1)
+"""
+
+# Respuestas vigentes: de empresas activas, diagnósticos no archivados y
+# preguntas del instrumento vigente (no las del Formato 01/02 archivados).
+SQL_RESPUESTAS_VIGENTES = """
+      FROM nexus360.respuesta r
+      JOIN nexus360.pregunta p     ON p.pregunta_id = r.pregunta_id
+      JOIN nexus360.seccion sec    ON sec.seccion_id = p.seccion_id
+      JOIN nexus360.dimension dim  ON dim.dimension_id = sec.dimension_id
+      JOIN nexus360.diagnostico d  ON d.diagnostico_id = r.diagnostico_id
+      JOIN nexus360.empresa e      ON e.empresa_id = d.empresa_id
+     WHERE e.archivado_en IS NULL
+       AND d.estado <> 'archivado'
+       AND dim.archivado_en IS NULL
+"""
+
+SQL_ULTIMO_CICLO = """
+    SELECT DISTINCT ON (c.empresa_id) c.*
+      FROM nexus360.ciclo_tamizaje c
+      JOIN nexus360.empresa e ON e.empresa_id = c.empresa_id
+     WHERE e.archivado_en IS NULL
+     ORDER BY c.empresa_id, c.anio DESC, c.creado_en DESC
+"""
+
+
 @router.get("/estadisticas", response_model=EstadisticasOut)
 async def estadisticas(conn: asyncpg.Connection = Depends(requerir_admin)):
-    """Vista agregada para el panel: conteos generales y distribuciones.
+    """Vista agregada para el panel: conteos generales, distribuciones e
+    indicadores del autodiagnóstico RSE Express.
 
-    Todas las consultas excluyen empresas archivadas (archivado_en NOT
-    NULL): son las que ya no cuentan como vigentes, igual que una cuenta
-    archivada no cuenta como usuario activo.
+    Todas las consultas excluyen empresas archivadas. El tamizaje que cuenta
+    es el más reciente de cada empresa (DISTINCT ON), para no contar dos
+    veces a quien lo editó en años distintos.
     """
     resumen = await conn.fetchrow(
         """
@@ -211,11 +248,13 @@ async def estadisticas(conn: asyncpg.Connection = Depends(requerir_admin)):
             (SELECT count(*) FROM nexus360.usuario WHERE archivado_en IS NULL) AS usuarios,
             (SELECT count(*) FROM nexus360.diagnostico d
                JOIN nexus360.empresa e ON e.empresa_id = d.empresa_id
-              WHERE e.archivado_en IS NULL) AS diagnosticos_totales,
+              WHERE e.archivado_en IS NULL AND d.formato_id = $1) AS diagnosticos_totales,
             (SELECT count(*) FROM nexus360.diagnostico d
                JOIN nexus360.empresa e ON e.empresa_id = d.empresa_id
-              WHERE e.archivado_en IS NULL AND d.estado = 'completado') AS diagnosticos_completados
-        """
+              WHERE e.archivado_en IS NULL AND d.formato_id = $1
+                AND d.estado = 'completado') AS diagnosticos_completados
+        """,
+        FORMATO_RSE,
     )
 
     por_sector = await conn.fetch(
@@ -229,54 +268,186 @@ async def estadisticas(conn: asyncpg.Connection = Depends(requerir_admin)):
         """
     )
 
-    # "Tamaño" es del ciclo de tamizaje, no de la empresa: una empresa
-    # puede tener ciclos de años distintos, así que se cuenta solo el
-    # más reciente de cada una (DISTINCT ON), para no contar dos veces a
-    # quien ya hizo el tamizaje de este año y del pasado.
     por_tamano = await conn.fetch(
-        """
-        SELECT tamano, count(*) AS total
-          FROM (
-              SELECT DISTINCT ON (c.empresa_id) c.tamano
-                FROM nexus360.ciclo_tamizaje c
-                JOIN nexus360.empresa e ON e.empresa_id = c.empresa_id
-               WHERE e.archivado_en IS NULL
-               ORDER BY c.empresa_id, c.anio DESC, c.creado_en DESC
-          ) ultimo
-         GROUP BY tamano
-         ORDER BY total DESC
-        """
+        f"SELECT tamano, count(*) AS total FROM ({SQL_ULTIMO_CICLO}) u GROUP BY tamano ORDER BY total DESC"
+    )
+    por_cliente = await conn.fetch(
+        f"SELECT clientes, count(*) AS total FROM ({SQL_ULTIMO_CICLO}) u GROUP BY clientes ORDER BY total DESC"
     )
 
-    # Aquí sí se cuenta cada diagnóstico (no solo el último): la pregunta
-    # es "cuántos diagnósticos hay en cada estado", no "en qué estado
-    # está cada empresa ahora mismo".
     por_estado = await conn.fetch(
         """
         SELECT d.formato_id, d.estado, count(*) AS total
           FROM nexus360.diagnostico d
           JOIN nexus360.empresa e ON e.empresa_id = d.empresa_id
-         WHERE e.archivado_en IS NULL
+          JOIN nexus360.formato f ON f.formato_id = d.formato_id
+         WHERE e.archivado_en IS NULL AND f.archivado_en IS NULL
          GROUP BY d.formato_id, d.estado
          ORDER BY d.formato_id, d.estado
         """
     )
 
-    promedio_dimension = await conn.fetch(
+    por_etapa = await conn.fetch(
+        f"""
+        SELECT CASE WHEN r.es_na THEN 'NA'
+                    WHEN r.es_diferente THEN 'diferente'
+                    ELSE r.valor::text END AS etapa,
+               count(*) AS total
+          {SQL_RESPUESTAS_VIGENTES}
+           AND (r.es_na OR r.es_diferente OR r.valor IS NOT NULL)
+         GROUP BY 1
+         ORDER BY 1
         """
+    )
+
+    # Lectura interna: la etapa elegida, o la clasificación de NEXUS para
+    # «Hacemos algo diferente». N/A y lo que falta por clasificar no cuentan.
+    promedio_dimension = await conn.fetch(
+        f"""
         SELECT dim.formato_id, dim.numero, dim.nombre AS dimension,
-               avg(r.valor)::float8 AS promedio, count(r.respuesta_id) AS respuestas
-          FROM nexus360.respuesta r
-          JOIN nexus360.pregunta p  ON p.pregunta_id = r.pregunta_id
-          JOIN nexus360.seccion sec ON sec.seccion_id = p.seccion_id
-          JOIN nexus360.dimension dim ON dim.dimension_id = sec.dimension_id
-          JOIN nexus360.diagnostico d ON d.diagnostico_id = r.diagnostico_id
-          JOIN nexus360.empresa e ON e.empresa_id = d.empresa_id
-         WHERE r.es_na = FALSE
-           AND d.estado <> 'archivado'
-           AND e.archivado_en IS NULL
+               avg(coalesce(r.valor, r.valor_clasificado))::float8 AS promedio,
+               count(*) AS respuestas
+          {SQL_RESPUESTAS_VIGENTES}
+           AND NOT r.es_na
+           AND coalesce(r.valor, r.valor_clasificado) IS NOT NULL
          GROUP BY dim.formato_id, dim.numero, dim.nombre
          ORDER BY dim.formato_id, dim.numero
+        """
+    )
+
+    indicadores = await conn.fetchrow(
+        f"""
+        WITH r AS (SELECT r.*, d.empresa_id {SQL_RESPUESTAS_VIGENTES}),
+             ultimo AS ({SQL_ULTIMO_CICLO})
+        SELECT
+            (SELECT count(*) FROM ultimo) AS empresas_con_tamizaje,
+            (SELECT count(*) FROM ultimo WHERE personas BETWEEN 10 AND 50) AS empresas_perfil_piloto,
+            (SELECT count(DISTINCT empresa_id) FROM r
+              WHERE r.es_na OR r.es_diferente OR r.valor IS NOT NULL) AS empresas_con_diagnostico,
+            (SELECT count(DISTINCT empresa_id) FROM r WHERE {SQL_ES_PRACTICA}) AS empresas_con_practicas,
+            (SELECT count(*) FROM r WHERE {SQL_ES_PRACTICA}) AS practicas_registradas,
+            (SELECT count(*) FROM r WHERE r.es_diferente) AS respuestas_diferente,
+            (SELECT count(*) FROM r WHERE r.es_diferente AND r.valor_clasificado IS NULL) AS diferente_sin_clasificar,
+            (SELECT count(*) FROM r WHERE r.es_na) AS respuestas_na,
+            (SELECT count(*) FROM nexus360.respuesta_materia rm
+               JOIN nexus360.diagnostico d ON d.diagnostico_id = rm.diagnostico_id
+               JOIN nexus360.empresa e ON e.empresa_id = d.empresa_id
+              WHERE e.archivado_en IS NULL AND d.estado <> 'archivado') AS materias_con_fortalecer,
+            (SELECT count(*) FROM nexus360.diagnostico d
+               JOIN nexus360.empresa e ON e.empresa_id = d.empresa_id
+              WHERE e.archivado_en IS NULL AND d.estado <> 'archivado'
+                AND coalesce(btrim(d.comentario_final), '') <> '') AS comentarios_finales
+        """
+    )
+
+    # --- Estadísticas propias del RSE Express -------------------------------
+    por_personas = await conn.fetch(
+        f"""
+        SELECT rango, count(*) AS total FROM (
+            SELECT CASE WHEN personas < 10 THEN '1-9'
+                        WHEN personas <= 50 THEN '10-50'
+                        WHEN personas <= 200 THEN '51-200'
+                        ELSE '201+' END AS rango
+              FROM ({SQL_ULTIMO_CICLO}) u
+        ) x
+         GROUP BY rango
+         ORDER BY min(CASE rango WHEN '1-9' THEN 1 WHEN '10-50' THEN 2 WHEN '51-200' THEN 3 ELSE 4 END)
+        """
+    )
+
+    etapas_materia = await conn.fetch(
+        f"""
+        SELECT dim.numero, dim.nombre AS materia,
+               CASE WHEN r.es_na THEN 'NA'
+                    WHEN r.es_diferente THEN 'diferente'
+                    ELSE r.valor::text END AS etapa,
+               count(*) AS total
+          {SQL_RESPUESTAS_VIGENTES}
+           AND dim.formato_id = '{FORMATO_RSE}'
+           AND (r.es_na OR r.es_diferente OR r.valor IS NOT NULL)
+         GROUP BY dim.numero, dim.nombre, 3
+         ORDER BY dim.numero, 3
+        """
+    )
+
+    # Todas las materias, aunque tengan cero: el cero también informa.
+    practicas_materia = await conn.fetch(
+        f"""
+        WITH r AS (
+            SELECT r.*, p.seccion_id
+              FROM nexus360.respuesta r
+              JOIN nexus360.pregunta p    ON p.pregunta_id = r.pregunta_id
+              JOIN nexus360.diagnostico d ON d.diagnostico_id = r.diagnostico_id
+              JOIN nexus360.empresa e     ON e.empresa_id = d.empresa_id
+             WHERE e.archivado_en IS NULL AND d.estado <> 'archivado'
+        )
+        SELECT dim.numero, dim.nombre AS materia,
+               count(r.respuesta_id) FILTER (WHERE {SQL_ES_PRACTICA}) AS total
+          FROM nexus360.dimension dim
+          LEFT JOIN nexus360.seccion sec ON sec.dimension_id = dim.dimension_id
+          LEFT JOIN r ON r.seccion_id = sec.seccion_id
+         WHERE dim.formato_id = '{FORMATO_RSE}' AND dim.archivado_en IS NULL
+         GROUP BY dim.numero, dim.nombre
+         ORDER BY dim.numero
+        """
+    )
+
+    # La oportunidad elegida en la matriz de priorización se guarda con el
+    # código de la pregunta (p. ej. '04b'): sus dos primeros caracteres son
+    # el número de la materia.
+    retos_materia = await conn.fetch(
+        f"""
+        SELECT dim.numero, dim.nombre AS materia, count(*) AS total
+          FROM nexus360.diagnostico d
+          JOIN nexus360.empresa e ON e.empresa_id = d.empresa_id
+          JOIN nexus360.dimension dim
+            ON dim.formato_id = d.formato_id
+           AND dim.numero = left(d.priorizacion->>'elegida', 2)
+           AND dim.archivado_en IS NULL
+         WHERE e.archivado_en IS NULL
+           AND d.estado <> 'archivado'
+           AND d.formato_id = '{FORMATO_RSE}'
+           AND coalesce(d.priorizacion->>'elegida', '') <> ''
+         GROUP BY dim.numero, dim.nombre
+         ORDER BY total DESC, dim.numero
+        """
+    )
+
+    # Mismas reglas que alertasInformativas() en el front: Ley 2173 por
+    # tamaño; SG-SST si 03b está en 0, 1 o N/A; datos si 06b está en 0, 1 o
+    # N/A y Consumidores aplica; territorio si hay comunidades étnicas.
+    alertas = await conn.fetchrow(
+        f"""
+        WITH ultimo AS ({SQL_ULTIMO_CICLO}),
+        diag AS (
+            SELECT DISTINCT ON (ciclo_id) diagnostico_id, ciclo_id
+              FROM nexus360.diagnostico
+             WHERE formato_id = '{FORMATO_RSE}' AND estado <> 'archivado'
+             ORDER BY ciclo_id, creado_en DESC
+        ),
+        bajas AS (
+            SELECT r.diagnostico_id,
+                   bool_or(p.codigo = '03b') AS sst_baja,
+                   bool_or(p.codigo = '06b') AS datos_baja
+              FROM nexus360.respuesta r
+              JOIN nexus360.pregunta p ON p.pregunta_id = r.pregunta_id
+             WHERE p.codigo IN ('03b', '06b') AND (r.es_na OR r.valor IN (0, 1))
+             GROUP BY r.diagnostico_id
+        ),
+        banderas AS (
+            SELECT u.tamano IN ('mediana', 'nose') AS ley2173,
+                   coalesce(b.sst_baja, FALSE) AS sst,
+                   coalesce(b.datos_baja, FALSE) AND u.clientes IN ('personas', 'mezcla') AS datos,
+                   u.zonas && ARRAY['indigenas', 'afro']::TEXT[] AS territorio
+              FROM ultimo u
+              LEFT JOIN diag dg ON dg.ciclo_id = u.ciclo_id
+              LEFT JOIN bajas b ON b.diagnostico_id = dg.diagnostico_id
+        )
+        SELECT count(*) FILTER (WHERE ley2173) AS ley2173,
+               count(*) FILTER (WHERE sst) AS sst,
+               count(*) FILTER (WHERE datos) AS datos,
+               count(*) FILTER (WHERE territorio) AS territorio
+          FROM banderas
         """
     )
 
@@ -284,56 +455,129 @@ async def estadisticas(conn: asyncpg.Connection = Depends(requerir_admin)):
         resumen=ResumenGeneralOut(**dict(resumen)),
         empresas_por_sector=[ConteoSectorOut(**dict(f)) for f in por_sector],
         empresas_por_tamano=[ConteoTamanoOut(**dict(f)) for f in por_tamano],
+        empresas_por_cliente=[ConteoClienteOut(**dict(f)) for f in por_cliente],
         diagnosticos_por_estado=[ConteoEstadoOut(**dict(f)) for f in por_estado],
+        respuestas_por_etapa=[ConteoEtapaOut(**dict(f)) for f in por_etapa],
         promedio_por_dimension=[PromedioDimensionOut(**dict(f)) for f in promedio_dimension],
+        indicadores=IndicadoresDiagnosticoOut(**dict(indicadores)),
+        empresas_por_personas=[ConteoRangoOut(**dict(f)) for f in por_personas],
+        etapas_por_materia=[ConteoMateriaEtapaOut(**dict(f)) for f in etapas_materia],
+        practicas_por_materia=[ConteoMateriaOut(**dict(f)) for f in practicas_materia],
+        retos_por_materia=[ConteoMateriaOut(**dict(f)) for f in retos_materia],
+        alertas=AlertasOut(**dict(alertas)),
     )
 
 
 @router.get("/empresas", response_model=list[EmpresaDetalleOut])
 async def listar_empresas_detalle(conn: asyncpg.Connection = Depends(requerir_admin)):
-    """Una fila por empresa activa: su perfil, el tamizaje de su ciclo
-    más reciente, y el estado actual de cada formato en ese ciclo.
-
-    `ultimo_ciclo` toma, por empresa, el ciclo del año más reciente
-    (DISTINCT ON). `iso26000_estado` y `ley2173_estado` toman, dentro de
-    ESE ciclo, el diagnóstico más nuevo de cada formato — puede haber
-    más de uno a lo largo del tiempo (un 'archivado' viejo y un
-    'completado' nuevo), y lo que importa para este reporte es el
-    estado vigente, no el historial completo.
-    """
+    """Una fila por empresa activa: su perfil, su tamizaje vigente (el ciclo
+    más reciente) y el avance de su autodiagnóstico RSE Express en ese ciclo."""
     filas = await conn.fetch(
-        """
-        WITH ultimo_ciclo AS (
-            SELECT DISTINCT ON (empresa_id)
-                   ciclo_id, empresa_id, anio, tamano, empleados,
-                   areas_de_vida, ciclo_previo, comunidades_etnicas, consumidor_final
-              FROM nexus360.ciclo_tamizaje
-             ORDER BY empresa_id, anio DESC, creado_en DESC
-        ),
+        f"""
+        WITH ultimo_ciclo AS ({SQL_ULTIMO_CICLO}),
         ultimo_diagnostico AS (
-            SELECT DISTINCT ON (ciclo_id, formato_id)
-                   ciclo_id, formato_id, estado
+            SELECT DISTINCT ON (ciclo_id) diagnostico_id, ciclo_id, estado, actualizado_en
               FROM nexus360.diagnostico
-             ORDER BY ciclo_id, formato_id, creado_en DESC
+             WHERE formato_id = '{FORMATO_RSE}' AND estado <> 'archivado'
+             ORDER BY ciclo_id, creado_en DESC
+        ),
+        conteos AS (
+            SELECT r.diagnostico_id,
+                   count(*) FILTER (WHERE r.es_na OR r.es_diferente OR r.valor IS NOT NULL) AS respuestas_con_etapa,
+                   count(*) FILTER (WHERE {SQL_ES_PRACTICA}) AS practicas_registradas,
+                   count(*) FILTER (WHERE r.es_diferente AND r.valor_clasificado IS NULL) AS pendientes_clasificar
+              FROM nexus360.respuesta r
+             GROUP BY r.diagnostico_id
         )
         SELECT
             e.empresa_id, e.razon_social, e.nit, e.dv,
             e.sector_id, sec.nombre AS sector_nombre,
             e.municipio, e.departamento, e.creado_en,
-            uc.anio, uc.tamano, uc.empleados, uc.areas_de_vida,
-            uc.ciclo_previo, uc.comunidades_etnicas, uc.consumidor_final,
-            iso.estado AS iso26000_estado,
-            ley.estado AS ley2173_estado
+            uc.anio, uc.tamano, uc.ingresos_rango, uc.personas, uc.vinculacion, uc.vinculacion_detalle,
+            uc.zonas, uc.territorio, uc.clientes, uc.clientes_detalle,
+            CASE WHEN uc.personas IS NULL THEN NULL ELSE uc.personas BETWEEN 10 AND 50 END AS perfil_piloto,
+            ud.estado AS diagnostico_estado,
+            ud.actualizado_en AS diagnostico_actualizado_en,
+            coalesce(co.respuestas_con_etapa, 0) AS respuestas_con_etapa,
+            coalesce(co.practicas_registradas, 0) AS practicas_registradas,
+            coalesce(co.pendientes_clasificar, 0) AS pendientes_clasificar
           FROM nexus360.empresa e
           JOIN nexus360.sector sec ON sec.sector_id = e.sector_id
           LEFT JOIN ultimo_ciclo uc ON uc.empresa_id = e.empresa_id
-          LEFT JOIN ultimo_diagnostico iso ON iso.ciclo_id = uc.ciclo_id AND iso.formato_id = 'iso26000'
-          LEFT JOIN ultimo_diagnostico ley ON ley.ciclo_id = uc.ciclo_id AND ley.formato_id = 'ley2173'
+          LEFT JOIN ultimo_diagnostico ud ON ud.ciclo_id = uc.ciclo_id
+          LEFT JOIN conteos co ON co.diagnostico_id = ud.diagnostico_id
          WHERE e.archivado_en IS NULL
          ORDER BY e.creado_en DESC
         """
     )
     return [EmpresaDetalleOut(**dict(f)) for f in filas]
+
+
+@router.get("/empresas/{empresa_id}/diagnostico", response_model=EmpresaMiaOut)
+async def diagnostico_empresa(empresa_id: UUID, conn: asyncpg.Connection = Depends(requerir_admin)):
+    """Lo que respondió una empresa, para que NEXUS lo lea: tamizaje vigente,
+    respuestas abiertas, etapas, «qué le gustaría fortalecer», comentario
+    final y matriz de priorización. Mismo formato que GET /empresa/mio."""
+    empresa = await conn.fetchrow(
+        """
+        SELECT empresa_id, razon_social, nit, dv, sector_id, municipio, departamento, extranjera
+          FROM nexus360.empresa WHERE empresa_id = $1 AND archivado_en IS NULL
+        """,
+        empresa_id,
+    )
+    if empresa is None:
+        raise ApiError(status.HTTP_404_NOT_FOUND, "DESCONOCIDO", "Empresa no encontrada.")
+    tamizaje = await ultimo_tamizaje(conn, empresa_id)
+    diagnostico = None
+    if tamizaje is not None:
+        diagnostico_id = await diagnostico_vigente_id(conn, empresa_id, tamizaje.ciclo_id)
+        if diagnostico_id is not None:
+            diagnostico = await leer_diagnostico(conn, diagnostico_id)
+    return EmpresaMiaOut(empresa=PerfilOut(**dict(empresa)), tamizaje=tamizaje, diagnostico=diagnostico)
+
+
+@router.put("/respuestas/{respuesta_id}/clasificacion", response_model=ClasificacionOut)
+async def clasificar_respuesta(
+    respuesta_id: UUID,
+    payload: ClasificarIn,
+    conn: asyncpg.Connection = Depends(requerir_admin),
+):
+    """NEXUS clasifica en la lectura interna 0–4 una respuesta «Hacemos algo
+    diferente» (sección 6.3 del protocolo). Con `valor: null` se quita la
+    clasificación. Solo aplica a esas respuestas: las demás ya tienen etapa."""
+    fila = await conn.fetchrow(
+        """
+        SELECT r.es_diferente, p.codigo
+          FROM nexus360.respuesta r JOIN nexus360.pregunta p ON p.pregunta_id = r.pregunta_id
+         WHERE r.respuesta_id = $1
+        """,
+        respuesta_id,
+    )
+    if fila is None:
+        raise ApiError(status.HTTP_404_NOT_FOUND, "DESCONOCIDO", "Respuesta no encontrada.")
+    if not fila["es_diferente"]:
+        raise ApiError(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "VALIDACION",
+            "Solo se clasifican las respuestas «Hacemos algo diferente».",
+        )
+    try:
+        actualizada = await conn.fetchrow(
+            """
+            UPDATE nexus360.respuesta
+               SET valor_clasificado = $2,
+                   clasificado_por = CASE WHEN $2::smallint IS NULL THEN NULL ELSE nexus360.current_usuario_id() END,
+                   clasificado_en  = CASE WHEN $2::smallint IS NULL THEN NULL ELSE now() END
+             WHERE respuesta_id = $1
+         RETURNING respuesta_id, valor_clasificado, clasificado_en
+            """,
+            respuesta_id, payload.valor,
+        )
+    except asyncpg.PostgresError as exc:
+        raise desde_postgres(exc) from exc
+    return ClasificacionOut(
+        respuesta_id=actualizada["respuesta_id"], codigo=fila["codigo"],
+        clasificada=actualizada["valor_clasificado"], clasificado_en=actualizada["clasificado_en"],
+    )
 
 
 @router.get("/usuarios/{usuario_id}/actividad", response_model=ActividadUsuarioOut)
@@ -374,9 +618,9 @@ async def actividad_usuario(usuario_id: UUID, conn: asyncpg.Connection = Depends
 
     tamizajes = await conn.fetch(
         """
-        SELECT c.ciclo_id, c.empresa_id, e.razon_social, c.anio, c.tamano, c.empleados,
-               c.areas_de_vida, c.ciclo_previo, c.comunidades_etnicas,
-               c.consumidor_final, c.creado_en
+        SELECT c.ciclo_id, c.empresa_id, e.razon_social, c.anio, c.tamano, c.ingresos_rango,
+               c.personas, c.vinculacion, c.zonas, c.territorio, c.clientes,
+               c.creado_en, c.actualizado_en
           FROM nexus360.ciclo_tamizaje c
           JOIN nexus360.empresa e ON e.empresa_id = c.empresa_id
          WHERE e.creado_por = $1
