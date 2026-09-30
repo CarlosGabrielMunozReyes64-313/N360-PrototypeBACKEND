@@ -428,7 +428,8 @@ React (motor existente) → resultados estructurados → FastAPI
 Variables opcionales (con sus valores por defecto): `GEMINI_MODEL`
 (`gemini-3.5-flash-lite`, estable y recomendado por Google para proyectos
 nuevos; para más profundidad, `gemini-3.8-flash`), `GEMINI_TIMEOUT_SEGUNDOS`
-(40), `GEMINI_INTENTOS` (2) e `IA_MAX_GENERACIONES_POR_HORA` (6 por usuario).
+(90: espera máxima **total** por análisis, sumando intentos), `GEMINI_INTENTOS`
+(2) e `IA_MAX_GENERACIONES_POR_HORA` (6 por usuario).
 Los modelos disponibles y los límites del nivel gratuito cambian con
 frecuencia: revísalos en Google AI Studio.
 
@@ -511,10 +512,17 @@ empresa como datos, no como instrucciones.
 - **Peticiones simultáneas** iguales (doble montaje de React en desarrollo,
   dos pestañas) comparten una sola llamada.
 - **Tope por usuario** de análisis nuevos por hora (en memoria, por proceso).
-- Solo se reintentan los errores transitorios (5xx, tiempo agotado,
-  respuesta inválida), una vez. Un 429 de cuota no se reintenta.
+- Solo se reintentan los fallos rápidos y pasajeros (500/502/503, sin
+  conexión, respuesta inválida), una vez y solo si quedan al menos 15 s del
+  total. No se reintenta un tiempo agotado (`ReadTimeout` o `504
+  DEADLINE_EXCEEDED`): solo duplicaría la espera. Tampoco un 429 de cuota.
+- La terminal muestra cuánto tardó cada análisis («Análisis IA generado con
+  … en 23.4 s») o por qué falló. Si aparece seguido «Gemini no respondió a
+  tiempo», suba `GEMINI_TIMEOUT_SEGUNDOS`.
 - Cambiar el prompt exige subir `VERSION_PROMPT`: los análisis viejos se
-  regeneran solos.
+  regeneran solos. La v3 (`rse-express-v3`) mantiene las reglas de la v2 y
+  acota la extensión de cada campo: respuestas más cortas se generan más
+  rápido (con la v2 algunos análisis pasaban de 40 s).
 
 ### Prompt v2 (`rse-express-v2`)
 

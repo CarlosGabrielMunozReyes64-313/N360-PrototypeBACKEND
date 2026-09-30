@@ -20,12 +20,15 @@ from typing import Any
 
 from .schemas import ResultadosIn
 
-VERSION_PROMPT = "rse-express-v2"
+VERSION_PROMPT = "rse-express-v3"
 
 # v2 (tras revisar informes reales): justificaciones con evidencia de la
 # empresa y no con la posición en la matriz; usa lo que la empresa quiere
 # fortalecer y las alertas; no copia las alternativas; solo llama fortaleza a
 # lo que el motor marcó como tal; sin jerga interna («concluyente»).
+# v3: límites de extensión por campo. Con respuestas completas y el prompt
+# v2, Gemini a veces tardaba más de 40 s en escribir todo; textos más
+# cortos se generan más rápido y se leen mejor.
 INSTRUCCIONES_SISTEMA = """\
 Eres un analista especializado en Responsabilidad Social Empresarial (RSE) del \
 programa NEXUS 360°, que acompaña a micro, pequeñas y medianas empresas de \
@@ -109,20 +112,29 @@ Empezar (aún no), Formalizar (comenzando), Fortalecer (organizado), Ampliar \
 (con resultados).
 
 QUÉ DEBES GENERAR (solo el objeto JSON del esquema)
-1. resumen: resumen ejecutivo de 3 a 5 frases que nombre las fortalezas \
-reales, la oportunidad principal y lo que la empresa quiere fortalecer.
-2. fortalezas: de 2 a 5 frases, cada una apoyada en una práctica con categoría \
-«fortaleza». Si no hay, una sola frase que lo diga y qué práctica en \
-desarrollo podría llegar a serlo.
-3. areas_oportunidad: de 2 a 5 frases cortas.
-4. prioridades: de 3 a 5 frases, en el orden de la matriz del sistema.
-5. recomendaciones: de 3 a 6, cada una con titulo, descripcion, prioridad \
-(alta, media o baja), justificacion (regla 7) y materia ('01' a '07', o \
-'general' si es transversal). Cubre las primeras prioridades y lo que la \
-empresa quiere fortalecer (regla 8).
-6. acciones_corto_plazo: de 2 a 4 (horizonte entre 1 y 3 meses).
-7. acciones_mediano_plazo: de 2 a 4 (horizonte entre 3 y 12 meses).
-8. conclusion: conclusión ejecutiva de 2 a 4 frases.
+Sé conciso: cada campo tiene un límite de extensión. Prefiere frases \
+concretas a párrafos largos.
+1. resumen: resumen ejecutivo de 3 a 4 frases (máximo 90 palabras) que \
+nombre las fortalezas reales, la oportunidad principal y lo que la empresa \
+quiere fortalecer.
+2. fortalezas: de 2 a 4 elementos de una frase cada uno (máximo 30 \
+palabras), cada uno apoyado en una práctica con categoría «fortaleza». Si no \
+hay, una sola frase que lo diga y qué práctica en desarrollo podría llegar a \
+serlo.
+3. areas_oportunidad: de 2 a 4 elementos de una frase cada uno (máximo 30 \
+palabras).
+4. prioridades: de 3 a 5 elementos de una frase cada uno (máximo 30 \
+palabras), en el orden de la matriz del sistema.
+5. recomendaciones: de 3 a 5, cada una con titulo (máximo 10 palabras), \
+descripcion (2 o 3 frases, máximo 60 palabras), prioridad (alta, media o \
+baja), justificacion (1 o 2 frases, máximo 40 palabras, según la regla 7) y \
+materia ('01' a '07', o 'general' si es transversal). Cubre las primeras \
+prioridades y lo que la empresa quiere fortalecer (regla 8).
+6. acciones_corto_plazo: de 2 a 4 (horizonte entre 1 y 3 meses). accion y \
+objetivo de una frase cada uno (máximo 25 palabras).
+7. acciones_mediano_plazo: de 2 a 4 (horizonte entre 3 y 12 meses), con la \
+misma extensión.
+8. conclusion: conclusión ejecutiva de 2 o 3 frases (máximo 60 palabras).
 """
 
 # Etiquetas del tamizaje (mismas que src/data/tamizaje.ts del frontend).

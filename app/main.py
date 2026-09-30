@@ -15,6 +15,14 @@ from .ia.gemini_service import MENSAJE_SIN_SDK, SDK_DISPONIBLE, cerrar_servicio
 from .routers import admin, auth, empresa, usuarios
 
 logger = logging.getLogger("nexus360")
+# uvicorn solo configura sus propios loggers: sin esto, los mensajes
+# informativos de la app (p. ej. «Análisis IA generado … en 23.4 s») no se
+# ven en la terminal. Propaga igual, así pytest los sigue capturando.
+if not logger.handlers:
+    _consola = logging.StreamHandler()
+    _consola.setFormatter(logging.Formatter("%(levelname)-9s %(message)s"))
+    logger.addHandler(_consola)
+    logger.setLevel(logging.INFO)
 
 
 @asynccontextmanager

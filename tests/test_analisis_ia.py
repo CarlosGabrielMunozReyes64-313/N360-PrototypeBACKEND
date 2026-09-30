@@ -233,9 +233,11 @@ def test_prompt_contiene_las_reglas_clave():
         # v2: evidencia real, metas de la empresa, sin copiar la matriz ni jerga interna.
         "Está prohibido justificar solo con la posición en la matriz", "lo_que_quiere_fortalecer",
         "no las copies", "«concluyente»", "Solo llama «fortaleza»", "comunidades étnicas",
+        # v3: extensión acotada por campo (respuestas más rápidas).
+        "Sé conciso", "máximo 40 palabras",
     ):
         assert regla in texto, regla
-    assert prompts.VERSION_PROMPT == "rse-express-v2"
+    assert prompts.VERSION_PROMPT == "rse-express-v3"
     m = mensaje_usuario(_contexto())
     assert m.count("<datos_del_diagnostico>") == 1 and "Jamondino" in m
 
@@ -257,12 +259,12 @@ class Gemini:
             raise r
         return r
 
-    def servicio(self, intentos=2, modelo="gemini-3.5-flash-lite") -> ServicioGemini:
+    def servicio(self, intentos=2, modelo="gemini-3.5-flash-lite", timeout=90.0) -> ServicioGemini:
         cliente = genai.Client(
             api_key=CLAVE,
             http_options=types.HttpOptions(httpx_async_client=httpx.AsyncClient(transport=httpx.MockTransport(self))),
         )
-        return ServicioGemini(CLAVE, modelo, intentos=intentos, cliente=cliente)
+        return ServicioGemini(CLAVE, modelo, timeout_segundos=timeout, intentos=intentos, cliente=cliente)
 
 
 def ok(analisis: dict | str) -> httpx.Response:
@@ -319,6 +321,40 @@ async def test_error_transitorio_se_reintenta():
     g = Gemini(error(503, "UNAVAILABLE"), ok(analisis_ejemplo()))
     await g.servicio().analizar(_contexto(), {"01", "03"})
     assert len(g.peticiones) == 2
+
+
+async def test_tiempo_agotado_no_se_reintenta(caplog):
+    """Reintentar tras un tiempo agotado solo duplicaba la espera (log real:
+    ReadTimeout a los 40 s y luego 504 DEADLINE_EXCEEDED)."""
+    for fallo in (httpx.ReadTimeout("tiempo agotado"), error(504, "DEADLINE_EXCEEDED", "Deadline expired")):
+        g = Gemini(fallo, ok(analisis_ejemplo()))
+        with caplog.at_level(logging.WARNING, logger="nexus360.ia"), pytest.raises(IANoDisponible):
+            await g.servicio().analizar(_contexto(), {"01", "03"})
+        assert len(g.peticiones) == 1
+    assert "no respondió a tiempo" in caplog.text and "GEMINI_TIMEOUT_SEGUNDOS" in caplog.text
+
+
+async def test_cada_llamada_usa_el_tiempo_que_queda_del_total():
+    g = Gemini(ok(analisis_ejemplo()))
+    await g.servicio(timeout=90).analizar(_contexto(), {"01", "03"})
+    # El SDK le comunica a Google el límite de la llamada.
+    assert 88 <= int(g.peticiones[0].headers["X-Server-Timeout"]) <= 90
+
+
+async def test_sin_tiempo_suficiente_no_hay_segundo_intento():
+    g = Gemini(ok("no es JSON"), ok(analisis_ejemplo()))
+    with pytest.raises(IANoDisponible):
+        await g.servicio(timeout=10).analizar(_contexto(), {"01", "03"})
+    assert len(g.peticiones) == 1
+
+
+async def test_sin_llamada_automatica_a_funciones(caplog):
+    g = Gemini(ok(analisis_ejemplo()))
+    servicio = g.servicio()
+    with caplog.at_level(logging.DEBUG):
+        await servicio.analizar(_contexto(), {"01", "03"})
+    assert servicio._config.automatic_function_calling.disable is True
+    assert "automatic function calling" not in caplog.text.lower()
 
 
 async def test_sin_conexion():

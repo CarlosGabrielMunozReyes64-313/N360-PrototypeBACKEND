@@ -45,11 +45,14 @@ class Settings(BaseSettings):
     # Modelo estable recomendado por Google para proyectos nuevos, con
     # límites holgados en el nivel gratuito. Se puede cambiar sin tocar código.
     gemini_model: str = "gemini-3.5-flash-lite"
-    # Tiempo máximo por llamada. El front muestra «Analizando resultados…».
-    gemini_timeout_segundos: float = 40.0
-    # Intentos en total ante una respuesta inválida o un error transitorio
-    # (5xx, tiempo agotado). Los 4xx (clave inválida, cuota agotada) no se
-    # reintentan: gastarían cuota sin posibilidad de éxito.
+    # Tiempo MÁXIMO TOTAL de espera por análisis, sumando intentos. Con
+    # diagnósticos largos Gemini puede tardar 30–60 s; el front muestra
+    # «Analizando resultados…» mientras tanto.
+    gemini_timeout_segundos: float = 90.0
+    # Intentos en total ante una respuesta inválida o un fallo pasajero del
+    # servidor (500/502/503, sin conexión), si queda tiempo. No se reintenta
+    # un tiempo agotado (solo duplicaría la espera) ni un 4xx (clave
+    # inválida, cuota agotada: gastaría cuota sin posibilidad de éxito).
     gemini_intentos: int = 2
     # Tope de análisis NUEVOS por usuario y por hora (los reutilizados no
     # cuentan). Protege la cuota gratuita frente a abusos o errores del front.
