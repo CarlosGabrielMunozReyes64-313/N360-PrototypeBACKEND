@@ -19,6 +19,12 @@ MENSAJE_ESQUEMA = (
     "(psql \"<conexión>\" -f db/009_rse_express.sql) y reinicie el backend."
 )
 
+MENSAJE_SIN_011 = (
+    "Falta db/011_consentimiento_datos.sql: el REGISTRO de cuentas nuevas está bloqueado, porque "
+    "no se puede guardar la autorización de tratamiento de datos. Aplíquela con el rol dueño del "
+    "esquema y reinicie el backend. El inicio de sesión y el resto de la aplicación funcionan."
+)
+
 # Errores de Postgres que indican una estructura vieja, no un fallo puntual.
 ERRORES_DE_ESQUEMA = (
     asyncpg.UndefinedColumnError,
@@ -28,9 +34,17 @@ ERRORES_DE_ESQUEMA = (
 
 
 async def verificar_esquema(pool: asyncpg.Pool) -> dict:
-    """Devuelve {'ok': bool, 'faltantes': [...]}. No lanza: si no puede
-    comprobar (p. ej. la base no responde), lo reporta como faltante."""
+    """Devuelve {'ok', 'faltantes', 'analisis_ia', 'consentimiento_datos'}. No
+    lanza: si no puede comprobar (p. ej. la base no responde), lo reporta
+    como faltante.
+
+    `analisis_ia` indica si está aplicada db/010_analisis_ia.sql y
+    `consentimiento_datos` si lo está db/011. NO afectan a `ok`: sin 010
+    todo funciona salvo el análisis inteligente; sin 011, todo salvo el
+    registro de cuentas nuevas (que exige guardar la autorización)."""
     faltantes: list[str] = []
+    analisis_ia = False
+    consentimiento = False
     try:
         async with pool.acquire() as conn:
             fila = await conn.fetchrow(
@@ -58,6 +72,16 @@ async def verificar_esquema(pool: asyncpg.Pool) -> dict:
                 )
                 if not catalogo:
                     faltantes.append("formato 'rse_express' en el catálogo")
+            tablas = await conn.fetchrow(
+                """
+                SELECT
+                    EXISTS (SELECT 1 FROM information_schema.tables
+                             WHERE table_schema = 'nexus360' AND table_name = 'diagnostico_analisis_ia') AS ia,
+                    EXISTS (SELECT 1 FROM information_schema.tables
+                             WHERE table_schema = 'nexus360' AND table_name = 'consentimiento_datos') AS consent
+                """
+            )
+            analisis_ia, consentimiento = bool(tablas["ia"]), bool(tablas["consent"])
     except Exception as exc:  # noqa: BLE001 - diagnóstico, nunca debe tumbar el arranque
         faltantes.append(f"no se pudo comprobar ({exc.__class__.__name__})")
 
@@ -65,4 +89,14 @@ async def verificar_esquema(pool: asyncpg.Pool) -> dict:
         logger.error(
             "ESQUEMA DESACTUALIZADO: falta %s. %s", ", ".join(faltantes), MENSAJE_ESQUEMA,
         )
-    return {"ok": not faltantes, "faltantes": faltantes}
+    if not analisis_ia and not faltantes:
+        logger.warning(
+            "Falta db/010_analisis_ia.sql: el análisis inteligente (Gemini) responderá «no disponible» "
+            "hasta aplicarla. El resto de la aplicación funciona normalmente."
+        )
+    if not consentimiento and not faltantes:
+        logger.error(MENSAJE_SIN_011)
+    return {
+        "ok": not faltantes, "faltantes": faltantes,
+        "analisis_ia": analisis_ia, "consentimiento_datos": consentimiento,
+    }

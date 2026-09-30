@@ -1,9 +1,12 @@
+import logging
+
 import asyncpg
 from fastapi import APIRouter, Depends, Request, status
 from starlette.concurrency import run_in_threadpool
 
 from ..db import SQL_FOTO_ACTUALIZADA_EN, fijar_usuario_actual, get_conn
 from ..errors import ApiError, desde_postgres
+from ..esquema import CODIGO_ESQUEMA, MENSAJE_SIN_011
 from ..imagenes import MAX_BYTES_ENTRADA, ImagenInvalida, procesar_foto_perfil
 from ..schemas import (
     ActualizarPerfilIn, CambiarPasswordIn, LoginIn, MeOut, RegistroIn, SesionOut, UsuarioOut,
@@ -11,6 +14,7 @@ from ..schemas import (
 from ..security import obtener_ip, obtener_user_agent, requerir_token
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+logger = logging.getLogger("nexus360")
 
 
 async def _usuario_actual(conn: asyncpg.Connection, usuario_id) -> UsuarioOut:
@@ -41,12 +45,31 @@ async def register(
 ):
     # 1) Alta vía registrar_usuario() — hashea con pgcrypto, valida
     #    formato de correo y longitud de password, y garantiza rol='empresa'.
+    #    En la MISMA transacción queda la prueba de la autorización de
+    #    tratamiento de datos (Ley 1581): si no se puede guardar, la cuenta
+    #    tampoco se crea.
     try:
         async with conn.transaction():
-            await conn.fetchval(
+            usuario_id = await conn.fetchval(
                 "SELECT nexus360.registrar_usuario($1, $2, $3)",
                 payload.email, payload.password, payload.nombre,
             )
+            await fijar_usuario_actual(conn, usuario_id)
+            await conn.execute(
+                """
+                INSERT INTO nexus360.consentimiento_datos
+                    (usuario_id, politica_version, ip_origen, user_agent)
+                VALUES ($1, $2, $3, $4)
+                """,
+                usuario_id, payload.politica_datos_version, obtener_ip(request),
+                (obtener_user_agent(request) or "")[:500] or None,
+            )
+    except asyncpg.UndefinedTableError as exc:
+        logger.error(MENSAJE_SIN_011)
+        raise ApiError(
+            status.HTTP_503_SERVICE_UNAVAILABLE, CODIGO_ESQUEMA,
+            "El registro está deshabilitado temporalmente por mantenimiento. Intente más tarde.",
+        ) from exc
     except asyncpg.PostgresError as exc:
         raise desde_postgres(exc) from exc
 

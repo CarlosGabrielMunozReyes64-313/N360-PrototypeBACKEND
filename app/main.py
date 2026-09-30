@@ -11,6 +11,7 @@ from .config import get_settings
 from .db import crear_pool
 from .errors import ApiError
 from .esquema import CODIGO_ESQUEMA, ERRORES_DE_ESQUEMA, MENSAJE_ESQUEMA, verificar_esquema
+from .ia.gemini_service import MENSAJE_SIN_SDK, SDK_DISPONIBLE, cerrar_servicio
 from .routers import admin, auth, empresa, usuarios
 
 logger = logging.getLogger("nexus360")
@@ -21,9 +22,19 @@ async def lifespan(app: FastAPI):
     app.state.pool = await crear_pool()
     logger.info("Pool de PostgreSQL creado.")
     app.state.esquema = await verificar_esquema(app.state.pool)
+    if not SDK_DISPONIBLE:
+        logger.warning(MENSAJE_SIN_SDK)
+    elif get_settings().gemini_configurado:
+        logger.info("Análisis inteligente habilitado con el modelo %s.", get_settings().gemini_model)
+    else:
+        logger.warning(
+            "GEMINI_API_KEY no está configurada: el análisis inteligente queda deshabilitado; "
+            "el diagnóstico y el PDF funcionan normalmente."
+        )
     try:
         yield
     finally:
+        await cerrar_servicio()
         await app.state.pool.close()
         logger.info("Pool de PostgreSQL cerrado.")
 
@@ -128,4 +139,16 @@ async def salud(request: Request):
             "estado": "error", "db": "ok", "esquema": "falta_009",
             "faltantes": esquema["faltantes"], "mensaje": MENSAJE_ESQUEMA,
         })
-    return {"estado": "ok", "db": "ok", "esquema": "ok"}
+    return {
+        "estado": "ok", "db": "ok", "esquema": "ok",
+        # Sin 011 el registro de cuentas nuevas queda bloqueado (ver esquema.py).
+        "consentimiento_datos": "ok" if esquema.get("consentimiento_datos") else "falta_011",
+        # Informativo: el análisis IA es opcional y nunca tumba el servicio.
+        "analisis_ia": {
+            "tabla": "ok" if esquema.get("analisis_ia") else "falta_010",
+            "gemini": (
+                "sin_sdk" if not SDK_DISPONIBLE
+                else "configurado" if get_settings().gemini_configurado else "sin_clave"
+            ),
+        },
+    }

@@ -23,6 +23,12 @@ app/
   routers/usuarios.py # GET /usuarios/{id}/foto
   routers/admin.py # /admin/usuarios (listar, estado, rol, password,
                    #   DELETE eliminar, POST restaurar) y /admin/sesiones
+  routers/empresa.py # /empresa/mio, respuestas del autodiagnóstico y
+                     #   POST …/analisis-ia (análisis inteligente)
+  ia/schemas.py      # contratos del análisis IA (entrada del motor, salida de Gemini)
+  ia/prompts.py      # prompt de Gemini, contexto enviado y huella
+  ia/gemini_service.py # cliente google-genai, validación, reintentos, errores
+  ia/analisis.py     # guardar/reutilizar, límite por hora, llamadas simultáneas
 db/
   001_schema.sql          # copia de nexus360_schema.sql
   002_role_password.sql   # fija password del rol nexus360_app (dev)
@@ -39,6 +45,10 @@ db/
   009_rse_express.sql             # Autodiagnóstico RSE Express: respaldo y
                                   #   reinicio de tamizajes/diagnósticos, tamizaje
                                   #   nuevo, respuestas abiertas y catálogo nuevo
+  010_analisis_ia.sql             # tabla diagnostico_analisis_ia (análisis
+                                  #   inteligente con Gemini) + RLS
+  011_consentimiento_datos.sql    # prueba de la autorización de tratamiento
+                                  #   de datos (Ley 1581) + RLS
 main.py           # `uvicorn main:app` (reexporta app/main.py)
 ```
 
@@ -69,6 +79,8 @@ psql nexus360 -f db/006_historial_sesiones.sql
 psql nexus360 -f db/007_estadisticas_catalogo.sql
 psql nexus360 -f db/008_foto_perfil.sql
 psql nexus360 -f db/009_rse_express.sql
+psql nexus360 -f db/010_analisis_ia.sql
+psql nexus360 -f db/011_consentimiento_datos.sql
 ```
 
 > ⚠️ Si actualizas una base que ya existía, aplica **008 antes de desplegar**
@@ -87,7 +99,9 @@ cp .env.example .env
 
 Ajusta `DATABASE_URL` si tu Postgres no corre en `localhost:5432` o usaste
 otra contraseña, y `ALLOWED_ORIGINS` si el front no corre en
-`http://localhost:5173`.
+`http://localhost:5173`. Para el análisis inteligente, pon tu clave en
+`GEMINI_API_KEY` (ver la sección «Análisis inteligente con Gemini (010)»);
+si la dejas vacía, todo funciona igual salvo esa sección.
 
 ## 3. Instalar dependencias y correr
 
@@ -353,7 +367,225 @@ psql "<conexión del dueño>" -f db/demo/borrar_demo.sql        # quitar
 
 ### Pruebas
 
-`pytest` (48 pruebas: contrato de rutas, validaciones del tamizaje y las
-etapas, y errores con CORS y mensaje de migración pendiente). La migración se probó sobre una base con datos del instrumento
+`pytest` (85 pruebas: contrato de rutas, validaciones del tamizaje y las
+etapas, errores con CORS y mensaje de migración pendiente, análisis IA y
+registro con autorización de datos; 7 más de integración con la base,
+opcionales — ver «Pruebas del análisis IA»). La migración se probó sobre una base con datos del instrumento
 anterior (dos corridas, conservación de cuentas, respaldo) y sobre una
 instalación desde cero con todas las migraciones.
+
+
+## Análisis inteligente con Gemini (010)
+
+Los resultados del autodiagnóstico ahora traen una sección **«Análisis
+inteligente»**: un resumen ejecutivo, fortalezas, áreas de oportunidad,
+prioridades, recomendaciones, acciones a corto y mediano plazo y una
+conclusión, generados con la Gemini API de Google. También van en el PDF.
+
+### Dos capas, separadas
+
+1. **Diagnóstico** (lo de siempre): niveles, categorías, fortalezas,
+   oportunidades, prioridades y alertas los calcula el motor del front
+   (`src/engine/scoring.ts`). Esta integración no lo toca ni lo duplica.
+2. **IA** (nuevo): Gemini recibe esos resultados ya calculados y los
+   **interpreta**. Nunca los recalcula: su respuesta es un JSON estructurado
+   sin ningún campo numérico, validado con Pydantic
+   (`app/ia/schemas.py::AnalisisIA`), así que no tiene dónde escribir ni
+   cambiar un puntaje.
+
+```
+React (motor existente) → resultados estructurados → FastAPI
+  → ¿hay análisis guardado con la misma huella? → sí: se devuelve
+                                                → no: Gemini → validar → guardar
+  → React (pantalla) → PDF
+```
+
+### Configuración
+
+1. Crea una clave en https://aistudio.google.com/apikey (el nivel gratuito
+   basta para un piloto).
+2. Ponla **solo** en el `.env` del backend (que está en `.gitignore`):
+
+   ```
+   GEMINI_API_KEY=tu_clave_aqui
+   ```
+
+   Nunca en el frontend, ni en variables `VITE_*`, ni en el código. El
+   navegador jamás la ve: solo habla con este backend.
+3. Aplica la migración (con el rol dueño del esquema). Con Docker desde cero
+   corre sola, como las demás:
+
+   ```bash
+   psql "<conexión del dueño>" -f db/010_analisis_ia.sql
+   ```
+4. Instala la dependencia nueva (`google-genai`, el SDK oficial) y reinicia:
+
+   ```bash
+   pip install -r requirements.txt
+   uvicorn main:app --reload --port 8000
+   ```
+
+Variables opcionales (con sus valores por defecto): `GEMINI_MODEL`
+(`gemini-3.5-flash-lite`, estable y recomendado por Google para proyectos
+nuevos; para más profundidad, `gemini-3.8-flash`), `GEMINI_TIMEOUT_SEGUNDOS`
+(40), `GEMINI_INTENTOS` (2) e `IA_MAX_GENERACIONES_POR_HORA` (6 por usuario).
+Los modelos disponibles y los límites del nivel gratuito cambian con
+frecuencia: revísalos en Google AI Studio.
+
+### Cómo probarlo
+
+```bash
+curl http://localhost:8000/health
+# "analisis_ia": {"tabla": "ok", "gemini": "configurado"}
+```
+
+Luego, en el front: completa el autodiagnóstico y abre **Resultados**. Verás
+«Analizando resultados…» y, en unos segundos, el análisis. Recarga la
+página: aparece al instante (se reutilizó el guardado; en el log no hay una
+llamada nueva). Cambia una respuesta y vuelve a Resultados: se regenera.
+
+### Si `/health` dice `"gemini": "sin_sdk"` o `"sin_clave"`
+
+- `sin_sdk`: falta el paquete `google-genai` en el entorno virtual (pasa si
+  se actualiza el código sin reinstalar dependencias). El backend arranca
+  igual y avisa en el log. Solución: con el `.venv` activado,
+  `pip install -r requirements.txt` y reiniciar uvicorn. Funciona con
+  Python 3.12 a 3.14 (todas sus dependencias traen ruedas precompiladas).
+- `sin_clave`: falta `GEMINI_API_KEY` en el `.env` del backend.
+
+En ambos casos el diagnóstico, los resultados y el PDF funcionan normal;
+solo la sección «Análisis inteligente» muestra que no está habilitada.
+
+### Ruta
+
+| Método | Ruta | Qué hace |
+|---|---|---|
+| POST | `/api/empresa/mio/diagnosticos/rse_express/analisis-ia` | cuerpo `{resultados}` (lo que calculó el motor). Devuelve `{diagnostico_id, analisis, generado_en, modelo, version_prompt, reutilizado}` |
+
+Errores, siempre con `{codigo, mensaje}` y un mensaje apto para el usuario:
+`503 IA_NO_CONFIGURADA` (no hay clave), `503 IA_NO_DISPONIBLE` (Gemini
+falló, no respondió a tiempo, devolvió algo que no cumple el esquema, o
+falta la migración 010), `429 IA_LIMITE` (tope por hora). Los formatos
+retirados responden 410, como en `…/respuestas`.
+
+### Qué pasa cuando Gemini no está disponible
+
+Nada se rompe. El front muestra un aviso amable (con «Reintentar» cuando
+tiene sentido), el mapa de prácticas, la matriz y las alertas siguen igual, y
+el botón **Descargar informe (PDF)** genera el informe completo sin la
+sección de IA. El backend registra el motivo (código de Gemini, tipo de
+error), nunca la clave ni el texto de la empresa. Si ya existía un análisis
+guardado para esos mismos resultados, se sigue mostrando aunque hoy no haya
+clave o Gemini esté caído.
+
+### Qué se le envía a Gemini
+
+Sector, tamaño, número de personas, tipo de vinculación y de clientes,
+municipio y territorio, más los resultados del motor: la etapa y categoría de
+cada práctica, lo que la empresa escribió que hace hoy (la respuesta abierta
+completa, hasta 1.500 caracteres, con los ejemplos marcados y «Hacemos algo
+diferente»), lo que quiere fortalecer (completo), las oportunidades en el
+orden del motor, las alertas y el comentario final. La pantalla y el PDF
+siguen mostrando el resumen corto de cada respuesta.
+
+**No** se envía: razón social, NIT, correos, nombres de usuario, tokens ni
+claves. Tampoco la lectura numérica interna 0–4: el protocolo no le muestra
+un puntaje a la empresa, y si Gemini la recibiera podría escribirlo en el
+informe. El prompt (`app/ia/prompts.py`) le exige no modificar resultados,
+no inventar, fundamentar cada recomendación y tratar los textos de la
+empresa como datos, no como instrucciones.
+
+> **Privacidad en el nivel gratuito.** Según las condiciones de la Gemini
+> API, en el nivel gratuito Google puede usar el contenido enviado para
+> mejorar sus productos. Si las empresas del piloto comparten información
+> sensible en sus respuestas abiertas, evalúa usar el nivel de pago
+> (revisa las condiciones vigentes en https://ai.google.dev/gemini-api/terms).
+
+### Cuándo se llama a Gemini (control de costo)
+
+- **Una vez por resultado.** La tabla `diagnostico_analisis_ia` guarda un
+  análisis por diagnóstico con su `huella` (SHA-256 de lo enviado + versión
+  del prompt). Mismo resultado → se reutiliza. Cambian los resultados
+  (una respuesta, o NEXUS clasifica una práctica propia) → se regenera la
+  próxima vez que se abran los resultados.
+- **Peticiones simultáneas** iguales (doble montaje de React en desarrollo,
+  dos pestañas) comparten una sola llamada.
+- **Tope por usuario** de análisis nuevos por hora (en memoria, por proceso).
+- Solo se reintentan los errores transitorios (5xx, tiempo agotado,
+  respuesta inválida), una vez. Un 429 de cuota no se reintenta.
+- Cambiar el prompt exige subir `VERSION_PROMPT`: los análisis viejos se
+  regeneran solos.
+
+### Prompt v2 (`rse-express-v2`)
+
+Tras revisar informes reales, el prompt exige: justificar cada recomendación
+con evidencia de la empresa (código de la práctica, etapa y lo que contó), no
+con su posición en la matriz; construir sobre lo que la empresa escribió en
+«¿Qué le gustaría fortalecer?»; no copiar las alternativas de la matriz;
+llamar «fortaleza» solo a lo que el motor marcó como tal; tener en cuenta las
+alertas (p. ej. comunidades étnicas) y no usar jerga interna como
+«concluyente». Los análisis guardados con v1 se regeneran la próxima vez que
+se abren los resultados. Para más profundidad, `GEMINI_MODEL=gemini-3.8-flash`.
+
+### Tabla `diagnostico_analisis_ia` (010)
+
+`diagnostico_id` (PK, FK a `diagnostico` con `ON DELETE CASCADE`),
+`contenido` JSONB, `huella`, `modelo`, `version_prompt`, `generado_en`,
+`generado_por`. RLS con FORCE y la misma política que `respuesta_materia`:
+cada empresa ve solo lo suyo; el admin, todo. Sin la migración el backend
+arranca igual, avisa en el log y el análisis responde «no disponible».
+
+### Pruebas del análisis IA
+
+```bash
+pytest                                   # incluye tests/test_analisis_ia.py (sin red ni base)
+N360_PRUEBAS_DB=1 pytest tests/test_analisis_ia_integracion.py   # con la base (crea cuentas de prueba)
+```
+
+`test_analisis_ia.py` usa el SDK real de `google-genai` con un transporte
+HTTP simulado: verifica la petición exacta que saldría hacia Google (modelo,
+clave solo en cabecera, JSON Schema, prompt), JSON válido e inválido,
+reintentos, cuota agotada, sin conexión, sin clave y que la clave nunca
+llegue a los logs. La de integración prueba contra PostgreSQL la
+reutilización, la regeneración, el RLS entre empresas, Gemini caído, la
+ausencia de clave y la falta de la migración 010 (esta última requiere
+`N360_DB_DUENO=<conexión del dueño>`). Ninguna llama a Google ni gasta cuota.
+
+
+## Autorización de tratamiento de datos (011)
+
+El registro (`POST /api/auth/register`) exige la autorización previa, expresa
+e informada de la Ley 1581 de 2012. El cuerpo lleva dos campos nuevos:
+
+```json
+{ "acepta_politica_datos": true, "politica_datos_version": "2026-09-29" }
+```
+
+- Sin `acepta_politica_datos: true` responde 422 «Para crear la cuenta debe
+  autorizar el tratamiento de sus datos personales». Un front viejo que no
+  manda el campo recibe el mismo mensaje.
+- Si la versión no es la vigente (`app/schemas.py::POLITICA_DATOS_VERSION`)
+  responde 422 pidiendo recargar la página: nadie puede aceptar un texto viejo.
+- La prueba de la autorización (versión, fecha, IP y navegador) se guarda en
+  `consentimiento_datos` **en la misma transacción** que crea la cuenta: si no
+  se puede guardar, la cuenta tampoco se crea.
+
+La tabla tiene RLS con FORCE: cada quien ve su autorización y el admin todas;
+el rol de aplicación puede insertar y leer, no modificar ni borrar (es
+evidencia). Si una cuenta se borra físicamente, su autorización se va con ella.
+
+**Aplicarla** con el rol dueño, antes de desplegar esta versión:
+
+```bash
+psql "<conexión del dueño>" -f db/011_consentimiento_datos.sql
+```
+
+Sin ella, el backend arranca, lo escribe en el log y `/health` muestra
+`"consentimiento_datos": "falta_011"`; el login y todo lo demás funcionan,
+pero el **registro de cuentas nuevas responde 503** hasta aplicarla (no se
+crean cuentas sin prueba de autorización).
+
+**Si cambia la política:** sube la versión aquí y en
+`src/data/politicaDatos.ts` del front, a la vez. Las cuentas existentes
+conservan la versión que aceptaron; pedirles la nueva al iniciar sesión
+todavía no está implementado.

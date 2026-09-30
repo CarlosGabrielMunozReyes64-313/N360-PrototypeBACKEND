@@ -2,7 +2,15 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic_core import PydanticCustomError
+
+# Versión vigente de la Política de Tratamiento de Datos Personales. Debe
+# coincidir con POLITICA_DATOS.version en src/data/politicaDatos.ts del
+# frontend: si el texto cambia, se cambian las dos y el registro exige
+# aceptar la nueva (un front viejo en caché no puede registrar con la
+# versión anterior).
+POLITICA_DATOS_VERSION = "2026-09-29"
 
 
 class RegistroIn(BaseModel):
@@ -13,6 +21,32 @@ class RegistroIn(BaseModel):
     # de aceptar cualquier string) para que sea imposible mandar 'admin'
     # desde este endpoint, igual que hace registrar_usuario() en SQL.
     rol: Literal["empresa"] = "empresa"
+    # Autorización previa, expresa e informada (Ley 1581 de 2012, art. 9):
+    # sin ella no se crea la cuenta. La prueba queda en consentimiento_datos.
+    # validate_default: un front viejo que no manda estos campos también debe
+    # recibir el mensaje claro (y no llegar a la base sin autorización).
+    acepta_politica_datos: bool = Field(default=False, validate_default=True)
+    politica_datos_version: str = Field(default="", max_length=40, validate_default=True)
+
+    @field_validator("acepta_politica_datos")
+    @classmethod
+    def _autorizacion_obligatoria(cls, v: bool) -> bool:
+        if v is not True:
+            raise PydanticCustomError(
+                "politica_datos",
+                "Para crear la cuenta debe autorizar el tratamiento de sus datos personales.",
+            )
+        return v
+
+    @field_validator("politica_datos_version")
+    @classmethod
+    def _version_vigente(cls, v: str) -> str:
+        if v != POLITICA_DATOS_VERSION:
+            raise PydanticCustomError(
+                "politica_datos_version",
+                "La Política de Tratamiento de Datos se actualizó. Recargue la página, léala y vuelva a intentarlo.",
+            )
+        return v
 
 
 class LoginIn(BaseModel):

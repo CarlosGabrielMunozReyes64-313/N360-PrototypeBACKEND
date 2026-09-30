@@ -11,3 +11,6 @@ email-validator>=2.2
 # imágenes de verdad, quita EXIF/GPS, limita tamaño). Tiene ruedas
 # precompiladas para Python 3.14 desde la 12.0.
 pillow>=11.0
+# Análisis inteligente del diagnóstico: SDK oficial de Google para la
+# Gemini API. La clave (GEMINI_API_KEY) vive solo en el .env del backend.
+google-genai>=2.25

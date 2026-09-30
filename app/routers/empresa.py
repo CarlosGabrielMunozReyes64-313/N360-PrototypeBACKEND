@@ -1,19 +1,26 @@
 """/api/empresa/*: perfil, tamizaje y autodiagnóstico RSE Express de la
 empresa vinculada a la cuenta en sesión."""
+import logging
 from datetime import datetime, timezone
 
 import asyncpg
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
 
+from ..config import get_settings
 from ..db import fijar_usuario_actual, get_conn
 from ..diagnostico_rse import (
     FORMATO_RSE, diagnostico_vigente_id, guardar_diagnostico, leer_diagnostico, ultimo_tamizaje,
 )
 from ..errors import ApiError
+from ..ia.analisis import generar_una_vez, guardar_analisis, leer_analisis, leer_organizacion, tabla_faltante
+from ..ia.gemini_service import ErrorIA, obtener_servicio
+from ..ia.prompts import VERSION_PROMPT, construir_contexto, contexto_organizacion, huella
+from ..ia.schemas import AnalisisIAIn, AnalisisIAOut
 from ..schemas_empresa import DiagnosticoIn, DiagnosticoOut, EmpresaIn, EmpresaMiaOut, PerfilOut
 from ..security import requerir_token
 
 router = APIRouter(prefix="/empresa", tags=["empresa"])
+logger = logging.getLogger("nexus360.ia")
 
 
 async def _contexto(token: str, conn: asyncpg.Connection) -> str:
@@ -191,3 +198,94 @@ async def guardar_respuestas(
             )
         diagnostico_id = await guardar_diagnostico(conn, empresa["empresa_id"], tamizaje.ciclo_id, payload)
         return await leer_diagnostico(conn, diagnostico_id)
+
+
+# ---------------------------------------------------------------------------
+# Análisis inteligente (Gemini)
+# ---------------------------------------------------------------------------
+
+def _error_ia(exc: ErrorIA) -> ApiError:
+    return ApiError(exc.status_code, exc.codigo, exc.mensaje)
+
+
+@router.post("/mio/diagnosticos/{formato_id}/analisis-ia", response_model=AnalisisIAOut)
+async def analisis_ia(
+    formato_id: str,
+    payload: AnalisisIAIn,
+    request: Request,
+    token: str = Depends(requerir_token),
+):
+    """Interpretación con IA de los resultados del autodiagnóstico.
+
+    Recibe los resultados que el motor existente ya calculó (capa 1) y
+    devuelve la interpretación de Gemini (capa 2): resumen, fortalezas,
+    oportunidades, prioridades, recomendaciones, acciones y conclusión.
+    Gemini nunca recalcula ni cambia niveles o prioridades.
+
+    Si ya hay un análisis guardado para estos mismos resultados, se devuelve
+    sin llamar a Gemini (`reutilizado: true`). Si Gemini falla, responde
+    503 IA_NO_DISPONIBLE con un mensaje amable: el diagnóstico y el PDF
+    siguen funcionando igual en el front.
+
+    La conexión a la base no se retiene mientras Gemini responde: se usa una
+    para leer, se suelta, y se toma otra solo para guardar.
+    """
+    if formato_id != FORMATO_RSE:
+        raise ApiError(
+            status.HTTP_410_GONE, "VALIDACION",
+            "Ese formato fue retirado. El diagnóstico vigente es el Autodiagnóstico RSE Express.",
+        )
+    settings = get_settings()
+    pool: asyncpg.Pool = request.app.state.pool
+    resultados = payload.resultados
+
+    # 1) Sesión, diagnóstico de la empresa y análisis guardado.
+    async with pool.acquire() as conn, conn.transaction():
+        usuario_id = await _contexto(token, conn)
+        empresa = await _mi_empresa(conn)
+        tamizaje = await ultimo_tamizaje(conn, empresa["empresa_id"]) if empresa else None
+        diagnostico_id = (
+            await diagnostico_vigente_id(conn, empresa["empresa_id"], tamizaje.ciclo_id) if tamizaje else None
+        )
+        if diagnostico_id is None:
+            # Código propio: el front lo distingue de un fallo de Gemini.
+            raise ApiError(
+                422, "SIN_DIAGNOSTICO",
+                "Todavía no hay datos de la empresa ni un autodiagnóstico guardados para analizar.",
+            )
+        organizacion = await leer_organizacion(conn, empresa["empresa_id"], tamizaje.ciclo_id)
+        contexto = construir_contexto(contexto_organizacion(organizacion), resultados)
+        firma = huella(contexto)
+        try:
+            guardado = await leer_analisis(conn, diagnostico_id)
+        except asyncpg.UndefinedTableError:
+            raise _error_ia(tabla_faltante()) from None
+
+    if guardado is not None and guardado.huella == firma:
+        return guardado.salida(reutilizado=True)
+
+    # 2) Gemini (sin conexión a la base tomada).
+    try:
+        servicio = obtener_servicio(settings)
+        analisis = await generar_una_vez(
+            usuario_id, diagnostico_id, firma, settings.ia_max_generaciones_por_hora,
+            lambda: servicio.analizar(contexto, resultados.materias_aplicables),
+        )
+    except ErrorIA as exc:
+        raise _error_ia(exc) from None
+
+    # 3) Guardar. Si no se puede guardar, el análisis igual se entrega: ya se
+    #    pagó la llamada y el usuario no tiene por qué perderlo.
+    try:
+        async with pool.acquire() as conn, conn.transaction():
+            await _contexto(token, conn)
+            nuevo = await guardar_analisis(conn, diagnostico_id, analisis, firma, servicio.modelo, VERSION_PROMPT)
+        return nuevo.salida(reutilizado=False)
+    except asyncpg.UndefinedTableError:
+        tabla_faltante()
+    except asyncpg.PostgresError:
+        logger.exception("No se pudo guardar el análisis IA del diagnóstico %s", diagnostico_id)
+    return AnalisisIAOut(
+        diagnostico_id=diagnostico_id, analisis=analisis, generado_en=datetime.now(timezone.utc),
+        modelo=servicio.modelo, version_prompt=VERSION_PROMPT, reutilizado=False,
+    )
