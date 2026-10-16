@@ -5,15 +5,41 @@ import asyncpg
 from fastapi import APIRouter, Depends, status
 
 from ..db import SQL_FOTO_ACTUALIZADA_EN, fijar_usuario_actual, get_conn
+from ..diagnostico_rse import (
+    FORMATO_RSE,
+    diagnostico_vigente_id,
+    leer_diagnostico,
+    ultimo_tamizaje,
+)
 from ..errors import ApiError, desde_postgres
-from ..diagnostico_rse import FORMATO_RSE, diagnostico_vigente_id, leer_diagnostico, ultimo_tamizaje
 from ..schemas import (
-    ActividadUsuarioOut, AlertasOut, CambiarEstadoIn, CambiarRolIn, ClasificacionOut, ClasificarIn,
-    ConteoClienteOut, ConteoEstadoOut, ConteoEtapaOut, ConteoMateriaEtapaOut, ConteoMateriaOut,
-    ConteoRangoOut, ConteoSectorOut, ConteoTamanoOut,
-    DiagnosticoActividadOut, EliminacionOut, EmpresaActividadOut, EmpresaDetalleOut,
-    EstadisticasOut, IndicadoresDiagnosticoOut, PromedioDimensionOut, RestablecerPasswordAdminIn,
-    ResumenGeneralOut, ResumenSesionesOut, SesionAdminOut, TamizajeActividadOut, UsuarioAdminOut,
+    ActividadUsuarioOut,
+    AlertasOut,
+    CambiarEstadoIn,
+    CambiarRolIn,
+    ClasificacionOut,
+    ClasificarIn,
+    ConteoClienteOut,
+    ConteoEstadoOut,
+    ConteoEtapaOut,
+    ConteoMateriaEtapaOut,
+    ConteoMateriaOut,
+    ConteoRangoOut,
+    ConteoSectorOut,
+    ConteoTamanoOut,
+    DiagnosticoActividadOut,
+    EliminacionOut,
+    EmpresaActividadOut,
+    EmpresaDetalleOut,
+    EstadisticasOut,
+    IndicadoresDiagnosticoOut,
+    PromedioDimensionOut,
+    RestablecerPasswordAdminIn,
+    ResumenGeneralOut,
+    ResumenSesionesOut,
+    SesionAdminOut,
+    TamizajeActividadOut,
+    UsuarioAdminOut,
 )
 from ..schemas_empresa import EmpresaMiaOut, PerfilOut
 from ..security import requerir_token
@@ -44,13 +70,23 @@ async def requerir_admin(
     async with conn.transaction():
         usuario_id = await conn.fetchval("SELECT nexus360.validar_sesion($1)", token)
         if usuario_id is None:
-            raise ApiError(status.HTTP_401_UNAUTHORIZED, "CREDENCIALES_INVALIDAS", "La sesión no es válida o expiró.")
+            raise ApiError(
+                status.HTTP_401_UNAUTHORIZED,
+                "CREDENCIALES_INVALIDAS",
+                "La sesión no es válida o expiró.",
+            )
 
         await fijar_usuario_actual(conn, usuario_id)
 
-        rol = await conn.fetchval("SELECT rol FROM nexus360.usuario WHERE usuario_id = $1", usuario_id)
+        rol = await conn.fetchval(
+            "SELECT rol FROM nexus360.usuario WHERE usuario_id = $1", usuario_id
+        )
         if rol != "admin":
-            raise ApiError(status.HTTP_403_FORBIDDEN, "PROHIBIDO", "Esta acción requiere una cuenta de administrador.")
+            raise ApiError(
+                status.HTTP_403_FORBIDDEN,
+                "PROHIBIDO",
+                "Esta acción requiere una cuenta de administrador.",
+            )
 
         yield conn
 
@@ -61,10 +97,13 @@ def _fila_a_usuario_admin(fila: asyncpg.Record) -> UsuarioAdminOut:
 
 async def _leer_usuario(conn: asyncpg.Connection, usuario_id: UUID) -> UsuarioAdminOut:
     fila = await conn.fetchrow(
-        f"SELECT {COLUMNAS_USUARIO} FROM nexus360.usuario WHERE usuario_id = $1", usuario_id,
+        f"SELECT {COLUMNAS_USUARIO} FROM nexus360.usuario WHERE usuario_id = $1",
+        usuario_id,
     )
     if fila is None:
-        raise ApiError(status.HTTP_404_NOT_FOUND, "DESCONOCIDO", "Usuario no encontrado.")
+        raise ApiError(
+            status.HTTP_404_NOT_FOUND, "DESCONOCIDO", "Usuario no encontrado."
+        )
     return _fila_a_usuario_admin(fila)
 
 
@@ -95,18 +134,23 @@ async def cambiar_estado(
     conn: asyncpg.Connection = Depends(requerir_admin),
 ):
     await conn.execute(
-        "UPDATE nexus360.usuario SET activo = $2 WHERE usuario_id = $1", usuario_id, payload.activo,
+        "UPDATE nexus360.usuario SET activo = $2 WHERE usuario_id = $1",
+        usuario_id,
+        payload.activo,
     )
     return await _leer_usuario(conn, usuario_id)
 
 
-@router.post("/usuarios/{usuario_id}/desbloquear", status_code=status.HTTP_204_NO_CONTENT)
-async def desbloquear_usuario(usuario_id: UUID, conn: asyncpg.Connection = Depends(requerir_admin)):
+@router.post(
+    "/usuarios/{usuario_id}/desbloquear", status_code=status.HTTP_204_NO_CONTENT
+)
+async def desbloquear_usuario(
+    usuario_id: UUID, conn: asyncpg.Connection = Depends(requerir_admin)
+):
     try:
         await conn.fetchval("SELECT nexus360.admin_desbloquear_usuario($1)", usuario_id)
     except asyncpg.PostgresError as exc:
         raise desde_postgres(exc) from exc
-    return None
 
 
 @router.post("/usuarios/{usuario_id}/rol", response_model=UsuarioAdminOut)
@@ -120,18 +164,25 @@ async def cambiar_rol(
     llamante_id = await conn.fetchval("SELECT nexus360.current_usuario_id()")
     if llamante_id == usuario_id and payload.rol != "admin":
         raise ApiError(
-            status.HTTP_422_UNPROCESSABLE_ENTITY, "VALIDACION", "No puedes quitarte tu propio rol de admin.",
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "VALIDACION",
+            "No puedes quitarte tu propio rol de admin.",
         )
 
     try:
-        await conn.fetchval("SELECT nexus360.cambiar_rol_usuario($1, $2)", usuario_id, payload.rol)
+        await conn.fetchval(
+            "SELECT nexus360.cambiar_rol_usuario($1, $2)", usuario_id, payload.rol
+        )
     except asyncpg.PostgresError as exc:
         raise desde_postgres(exc) from exc
 
     return await _leer_usuario(conn, usuario_id)
 
 
-@router.post("/usuarios/{usuario_id}/restablecer-password", status_code=status.HTTP_204_NO_CONTENT)
+@router.post(
+    "/usuarios/{usuario_id}/restablecer-password",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
 async def restablecer_password(
     usuario_id: UUID,
     payload: RestablecerPasswordAdminIn,
@@ -139,11 +190,12 @@ async def restablecer_password(
 ):
     try:
         await conn.fetchval(
-            "SELECT nexus360.admin_restablecer_password($1, $2)", usuario_id, payload.password_nueva,
+            "SELECT nexus360.admin_restablecer_password($1, $2)",
+            usuario_id,
+            payload.password_nueva,
         )
     except asyncpg.PostgresError as exc:
         raise desde_postgres(exc) from exc
-    return None
 
 
 @router.delete("/usuarios/{usuario_id}", response_model=EliminacionOut)
@@ -169,12 +221,16 @@ async def eliminar_usuario(
     llamante_id = await conn.fetchval("SELECT nexus360.current_usuario_id()")
     if llamante_id == usuario_id:
         raise ApiError(
-            status.HTTP_422_UNPROCESSABLE_ENTITY, "VALIDACION", "No puedes eliminar tu propia cuenta.",
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "VALIDACION",
+            "No puedes eliminar tu propia cuenta.",
         )
 
     try:
         modo = await conn.fetchval(
-            "SELECT nexus360.admin_eliminar_usuario($1, $2)", usuario_id, conservar_historial,
+            "SELECT nexus360.admin_eliminar_usuario($1, $2)",
+            usuario_id,
+            conservar_historial,
         )
     except asyncpg.PostgresError as exc:
         raise desde_postgres(exc) from exc
@@ -183,13 +239,15 @@ async def eliminar_usuario(
         "La cuenta se borró definitivamente: no tenía empresas ni respuestas asociadas."
         if modo == "fisico"
         else "La cuenta se archivó: conservaba historial, así que se conserva la trazabilidad. "
-             "Su correo queda libre para un registro nuevo."
+        "Su correo queda libre para un registro nuevo."
     )
     return EliminacionOut(usuario_id=usuario_id, modo=modo, mensaje=mensaje)
 
 
 @router.post("/usuarios/{usuario_id}/restaurar", response_model=UsuarioAdminOut)
-async def restaurar_usuario(usuario_id: UUID, conn: asyncpg.Connection = Depends(requerir_admin)):
+async def restaurar_usuario(
+    usuario_id: UUID, conn: asyncpg.Connection = Depends(requerir_admin)
+):
     """Deshace un archivado. Solo aplica a cuentas archivadas: si el
     borrado fue físico no hay nada que restaurar."""
     try:
@@ -458,7 +516,9 @@ async def estadisticas(conn: asyncpg.Connection = Depends(requerir_admin)):
         empresas_por_cliente=[ConteoClienteOut(**dict(f)) for f in por_cliente],
         diagnosticos_por_estado=[ConteoEstadoOut(**dict(f)) for f in por_estado],
         respuestas_por_etapa=[ConteoEtapaOut(**dict(f)) for f in por_etapa],
-        promedio_por_dimension=[PromedioDimensionOut(**dict(f)) for f in promedio_dimension],
+        promedio_por_dimension=[
+            PromedioDimensionOut(**dict(f)) for f in promedio_dimension
+        ],
         indicadores=IndicadoresDiagnosticoOut(**dict(indicadores)),
         empresas_por_personas=[ConteoRangoOut(**dict(f)) for f in por_personas],
         etapas_por_materia=[ConteoMateriaEtapaOut(**dict(f)) for f in etapas_materia],
@@ -471,7 +531,12 @@ async def estadisticas(conn: asyncpg.Connection = Depends(requerir_admin)):
 @router.get("/empresas", response_model=list[EmpresaDetalleOut])
 async def listar_empresas_detalle(conn: asyncpg.Connection = Depends(requerir_admin)):
     """Una fila por empresa activa: su perfil, su tamizaje vigente (el ciclo
-    más reciente) y el avance de su autodiagnóstico RSE Express en ese ciclo."""
+    más reciente), el avance de su autodiagnóstico RSE Express en ese ciclo
+    y la cuenta que sirve de contacto (nombre y correo).
+
+    El contacto es quien registró la empresa; si esa cuenta se eliminó, otra
+    cuenta de empresa vinculada (la más antigua). Si no queda ninguna, los
+    dos campos van en NULL: no se inventa un contacto."""
     filas = await conn.fetch(
         f"""
         WITH ultimo_ciclo AS ({SQL_ULTIMO_CICLO}),
@@ -500,12 +565,25 @@ async def listar_empresas_detalle(conn: asyncpg.Connection = Depends(requerir_ad
             ud.actualizado_en AS diagnostico_actualizado_en,
             coalesce(co.respuestas_con_etapa, 0) AS respuestas_con_etapa,
             coalesce(co.practicas_registradas, 0) AS practicas_registradas,
-            coalesce(co.pendientes_clasificar, 0) AS pendientes_clasificar
+            coalesce(co.pendientes_clasificar, 0) AS pendientes_clasificar,
+            ct.contacto_nombre,
+            ct.contacto_email
           FROM nexus360.empresa e
           JOIN nexus360.sector sec ON sec.sector_id = e.sector_id
           LEFT JOIN ultimo_ciclo uc ON uc.empresa_id = e.empresa_id
           LEFT JOIN ultimo_diagnostico ud ON ud.ciclo_id = uc.ciclo_id
           LEFT JOIN conteos co ON co.diagnostico_id = ud.diagnostico_id
+          LEFT JOIN LATERAL (
+            SELECT u.nombre AS contacto_nombre, u.email::text AS contacto_email
+              FROM nexus360.usuario u
+             WHERE u.archivado_en IS NULL
+               AND u.rol = 'empresa'
+               AND (u.usuario_id = e.creado_por
+                    OR EXISTS (SELECT 1 FROM nexus360.usuario_empresa ue
+                                WHERE ue.empresa_id = e.empresa_id AND ue.usuario_id = u.usuario_id))
+             ORDER BY coalesce(u.usuario_id = e.creado_por, FALSE) DESC, u.creado_en, u.usuario_id
+             LIMIT 1
+          ) ct ON TRUE
          WHERE e.archivado_en IS NULL
          ORDER BY e.creado_en DESC
         """
@@ -514,7 +592,9 @@ async def listar_empresas_detalle(conn: asyncpg.Connection = Depends(requerir_ad
 
 
 @router.get("/empresas/{empresa_id}/diagnostico", response_model=EmpresaMiaOut)
-async def diagnostico_empresa(empresa_id: UUID, conn: asyncpg.Connection = Depends(requerir_admin)):
+async def diagnostico_empresa(
+    empresa_id: UUID, conn: asyncpg.Connection = Depends(requerir_admin)
+):
     """Lo que respondió una empresa, para que NEXUS lo lea: tamizaje vigente,
     respuestas abiertas, etapas, «qué le gustaría fortalecer», comentario
     final y matriz de priorización. Mismo formato que GET /empresa/mio."""
@@ -526,14 +606,20 @@ async def diagnostico_empresa(empresa_id: UUID, conn: asyncpg.Connection = Depen
         empresa_id,
     )
     if empresa is None:
-        raise ApiError(status.HTTP_404_NOT_FOUND, "DESCONOCIDO", "Empresa no encontrada.")
+        raise ApiError(
+            status.HTTP_404_NOT_FOUND, "DESCONOCIDO", "Empresa no encontrada."
+        )
     tamizaje = await ultimo_tamizaje(conn, empresa_id)
     diagnostico = None
     if tamizaje is not None:
-        diagnostico_id = await diagnostico_vigente_id(conn, empresa_id, tamizaje.ciclo_id)
+        diagnostico_id = await diagnostico_vigente_id(
+            conn, empresa_id, tamizaje.ciclo_id
+        )
         if diagnostico_id is not None:
             diagnostico = await leer_diagnostico(conn, diagnostico_id)
-    return EmpresaMiaOut(empresa=PerfilOut(**dict(empresa)), tamizaje=tamizaje, diagnostico=diagnostico)
+    return EmpresaMiaOut(
+        empresa=PerfilOut(**dict(empresa)), tamizaje=tamizaje, diagnostico=diagnostico
+    )
 
 
 @router.put("/respuestas/{respuesta_id}/clasificacion", response_model=ClasificacionOut)
@@ -554,10 +640,13 @@ async def clasificar_respuesta(
         respuesta_id,
     )
     if fila is None:
-        raise ApiError(status.HTTP_404_NOT_FOUND, "DESCONOCIDO", "Respuesta no encontrada.")
+        raise ApiError(
+            status.HTTP_404_NOT_FOUND, "DESCONOCIDO", "Respuesta no encontrada."
+        )
     if not fila["es_diferente"]:
         raise ApiError(
-            status.HTTP_422_UNPROCESSABLE_ENTITY, "VALIDACION",
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "VALIDACION",
             "Solo se clasifican las respuestas «Hacemos algo diferente».",
         )
     try:
@@ -570,18 +659,23 @@ async def clasificar_respuesta(
              WHERE respuesta_id = $1
          RETURNING respuesta_id, valor_clasificado, clasificado_en
             """,
-            respuesta_id, payload.valor,
+            respuesta_id,
+            payload.valor,
         )
     except asyncpg.PostgresError as exc:
         raise desde_postgres(exc) from exc
     return ClasificacionOut(
-        respuesta_id=actualizada["respuesta_id"], codigo=fila["codigo"],
-        clasificada=actualizada["valor_clasificado"], clasificado_en=actualizada["clasificado_en"],
+        respuesta_id=actualizada["respuesta_id"],
+        codigo=fila["codigo"],
+        clasificada=actualizada["valor_clasificado"],
+        clasificado_en=actualizada["clasificado_en"],
     )
 
 
 @router.get("/usuarios/{usuario_id}/actividad", response_model=ActividadUsuarioOut)
-async def actividad_usuario(usuario_id: UUID, conn: asyncpg.Connection = Depends(requerir_admin)):
+async def actividad_usuario(
+    usuario_id: UUID, conn: asyncpg.Connection = Depends(requerir_admin)
+):
     """Todo el rastro de un usuario en un solo viaje: sesiones, empresas,
     tamizajes y diagnósticos.
 
@@ -696,9 +790,10 @@ async def listar_sesiones(
 
 
 @router.post("/sesiones/{sesion_id}/revocar", status_code=status.HTTP_204_NO_CONTENT)
-async def revocar_sesion(sesion_id: UUID, conn: asyncpg.Connection = Depends(requerir_admin)):
+async def revocar_sesion(
+    sesion_id: UUID, conn: asyncpg.Connection = Depends(requerir_admin)
+):
     try:
         await conn.fetchval("SELECT nexus360.admin_revocar_sesion($1)", sesion_id)
     except asyncpg.PostgresError as exc:
         raise desde_postgres(exc) from exc
-    return None

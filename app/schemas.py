@@ -26,7 +26,9 @@ class RegistroIn(BaseModel):
     # validate_default: un front viejo que no manda estos campos también debe
     # recibir el mensaje claro (y no llegar a la base sin autorización).
     acepta_politica_datos: bool = Field(default=False, validate_default=True)
-    politica_datos_version: str = Field(default="", max_length=40, validate_default=True)
+    politica_datos_version: str = Field(
+        default="", max_length=40, validate_default=True
+    )
 
     @field_validator("acepta_politica_datos")
     @classmethod
@@ -70,6 +72,7 @@ class UsuarioOut(BaseModel):
 
 class ActualizarPerfilIn(BaseModel):
     """Ambos campos opcionales: se puede mandar solo el que cambió."""
+
     nombre: str | None = Field(default=None, min_length=2, max_length=200)
     email: EmailStr | None = None
 
@@ -81,10 +84,12 @@ class CambiarPasswordIn(BaseModel):
 
 # ---- Solo para /api/admin/* ----
 
+
 class UsuarioAdminOut(BaseModel):
     """Vista de usuario para el panel de admin — incluye campos que un
     usuario normal nunca ve de sí mismo (intentos_fallidos, bloqueado_hasta)
     y el marcador de eliminación (archivado_en)."""
+
     usuario_id: UUID
     email: str
     nombre: str
@@ -117,6 +122,7 @@ class EliminacionOut(BaseModel):
     `modo` dice qué ocurrió de verdad: 'fisico' cuando la cuenta no tenía
     rastro y se borró, 'archivado' cuando se conservó por trazabilidad.
     El panel lo usa para no prometerle al admin algo que no pasó."""
+
     usuario_id: UUID
     modo: Literal["fisico", "archivado"]
     mensaje: str
@@ -138,6 +144,7 @@ class SesionAdminOut(BaseModel):
 
 class ResumenSesionesOut(BaseModel):
     """Una fila por usuario para la lista de actividad."""
+
     usuario_id: UUID
     total: int
     activas: int
@@ -157,6 +164,7 @@ class EmpresaActividadOut(BaseModel):
 class TamizajeActividadOut(BaseModel):
     """Un tamizaje «Conozcamos su empresa» (T1, T2, T5 y T6). Se guarda la
     fecha de creación y la de la última edición, no el historial completo."""
+
     ciclo_id: UUID
     empresa_id: UUID
     razon_social: str
@@ -190,6 +198,7 @@ class DiagnosticoActividadOut(BaseModel):
 
 # ---- Solo para /api/admin/estadisticas y /api/admin/empresas ----
 
+
 class ResumenGeneralOut(BaseModel):
     empresas: int
     usuarios: int
@@ -216,12 +225,14 @@ class ConteoEstadoOut(BaseModel):
 
 class ConteoClienteOut(BaseModel):
     """T6 · tipo de clientes: personas, empresas, publicas o mezcla."""
+
     clientes: str
     total: int
 
 
 class ConteoEtapaOut(BaseModel):
     """Respuestas por etapa: '0'..'4', 'diferente' o 'NA'."""
+
     etapa: str
     total: int
 
@@ -229,6 +240,7 @@ class ConteoEtapaOut(BaseModel):
 class PromedioDimensionOut(BaseModel):
     """Promedio de la lectura INTERNA 0–4 por materia (uso de NEXUS; a la
     empresa no se le muestra como puntaje)."""
+
     formato_id: str
     numero: str
     dimension: str
@@ -238,6 +250,7 @@ class PromedioDimensionOut(BaseModel):
 
 class ConteoRangoOut(BaseModel):
     """Empresas por número de personas (T2), en rangos."""
+
     rango: str
     total: int
 
@@ -250,6 +263,7 @@ class ConteoMateriaOut(BaseModel):
 
 class ConteoMateriaEtapaOut(BaseModel):
     """Respuestas de una materia en una etapa ('0'..'4', 'diferente', 'NA')."""
+
     numero: str
     materia: str
     etapa: str
@@ -258,6 +272,7 @@ class ConteoMateriaEtapaOut(BaseModel):
 
 class AlertasOut(BaseModel):
     """Empresas con cada alerta informativa (mismas reglas que el front)."""
+
     ley2173: int
     sst: int
     datos: int
@@ -267,6 +282,7 @@ class AlertasOut(BaseModel):
 class IndicadoresDiagnosticoOut(BaseModel):
     """Indicadores de la sección 10 del protocolo (diagnóstico ajustado y
     participación). Son conteos descriptivos, no metas."""
+
     empresas_con_tamizaje: int
     empresas_perfil_piloto: int
     empresas_con_diagnostico: int
@@ -300,6 +316,7 @@ class EmpresaDetalleOut(BaseModel):
     reciente y el avance de su autodiagnóstico RSE Express. Si la empresa no
     tiene tamizaje (p. ej. justo después de la migración 009), los campos de
     tamizaje y diagnóstico quedan en None: no se inventa un valor."""
+
     empresa_id: UUID
     razon_social: str
     nit: str
@@ -326,11 +343,16 @@ class EmpresaDetalleOut(BaseModel):
     respuestas_con_etapa: int
     practicas_registradas: int
     pendientes_clasificar: int
+    # Cuenta de contacto: quien registró la empresa o, si se eliminó, otra
+    # cuenta de empresa vinculada. None si no queda ninguna.
+    contacto_nombre: str | None = None
+    contacto_email: str | None = None
 
 
 class ActividadUsuarioOut(BaseModel):
     """Todo lo que el sistema sabe del paso de un usuario por la
     plataforma: sus sesiones y su rastro en el diagnóstico."""
+
     usuario: UsuarioAdminOut
     sesiones: list[SesionAdminOut]
     empresas: list[EmpresaActividadOut]
@@ -341,6 +363,7 @@ class ActividadUsuarioOut(BaseModel):
 class ClasificarIn(BaseModel):
     """Clasificación de NEXUS para una respuesta «Hacemos algo diferente»:
     0–4 en la lectura interna, o None para quitarla."""
+
     valor: int | None = Field(default=None, ge=0, le=4)
 
 

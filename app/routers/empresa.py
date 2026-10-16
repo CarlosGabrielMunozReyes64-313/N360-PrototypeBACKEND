@@ -1,5 +1,6 @@
 """/api/empresa/*: perfil, tamizaje y autodiagnóstico RSE Express de la
 empresa vinculada a la cuenta en sesión."""
+
 import logging
 from datetime import datetime, timezone
 
@@ -9,14 +10,35 @@ from fastapi import APIRouter, Depends, Request, status
 from ..config import get_settings
 from ..db import fijar_usuario_actual, get_conn
 from ..diagnostico_rse import (
-    FORMATO_RSE, diagnostico_vigente_id, guardar_diagnostico, leer_diagnostico, ultimo_tamizaje,
+    FORMATO_RSE,
+    diagnostico_vigente_id,
+    guardar_diagnostico,
+    leer_diagnostico,
+    ultimo_tamizaje,
 )
 from ..errors import ApiError
-from ..ia.analisis import generar_una_vez, guardar_analisis, leer_analisis, leer_organizacion, tabla_faltante
+from ..ia.analisis import (
+    generar_una_vez,
+    guardar_analisis,
+    leer_analisis,
+    leer_organizacion,
+    tabla_faltante,
+)
 from ..ia.gemini_service import ErrorIA, obtener_servicio
-from ..ia.prompts import VERSION_PROMPT, construir_contexto, contexto_organizacion, huella
+from ..ia.prompts import (
+    VERSION_PROMPT,
+    construir_contexto,
+    contexto_organizacion,
+    huella,
+)
 from ..ia.schemas import AnalisisIAIn, AnalisisIAOut
-from ..schemas_empresa import DiagnosticoIn, DiagnosticoOut, EmpresaIn, EmpresaMiaOut, PerfilOut
+from ..schemas_empresa import (
+    DiagnosticoIn,
+    DiagnosticoOut,
+    EmpresaIn,
+    EmpresaMiaOut,
+    PerfilOut,
+)
 from ..security import requerir_token
 
 router = APIRouter(prefix="/empresa", tags=["empresa"])
@@ -28,7 +50,11 @@ async def _contexto(token: str, conn: asyncpg.Connection) -> str:
     de una transacción abierta para que el SET LOCAL siga vigente."""
     usuario_id = await conn.fetchval("SELECT nexus360.validar_sesion($1)", token)
     if usuario_id is None:
-        raise ApiError(status.HTTP_401_UNAUTHORIZED, "CREDENCIALES_INVALIDAS", "La sesión no es válida o expiró.")
+        raise ApiError(
+            status.HTTP_401_UNAUTHORIZED,
+            "CREDENCIALES_INVALIDAS",
+            "La sesión no es válida o expiró.",
+        )
     await fijar_usuario_actual(conn, usuario_id)
     return usuario_id
 
@@ -48,14 +74,20 @@ async def _mi_empresa(conn: asyncpg.Connection) -> asyncpg.Record | None:
     )
 
 
-async def _estado_completo(conn: asyncpg.Connection, empresa: asyncpg.Record) -> EmpresaMiaOut:
+async def _estado_completo(
+    conn: asyncpg.Connection, empresa: asyncpg.Record
+) -> EmpresaMiaOut:
     tamizaje = await ultimo_tamizaje(conn, empresa["empresa_id"])
     diagnostico = None
     if tamizaje is not None:
-        diagnostico_id = await diagnostico_vigente_id(conn, empresa["empresa_id"], tamizaje.ciclo_id)
+        diagnostico_id = await diagnostico_vigente_id(
+            conn, empresa["empresa_id"], tamizaje.ciclo_id
+        )
         if diagnostico_id is not None:
             diagnostico = await leer_diagnostico(conn, diagnostico_id)
-    return EmpresaMiaOut(empresa=PerfilOut(**dict(empresa)), tamizaje=tamizaje, diagnostico=diagnostico)
+    return EmpresaMiaOut(
+        empresa=PerfilOut(**dict(empresa)), tamizaje=tamizaje, diagnostico=diagnostico
+    )
 
 
 @router.get("/mio", response_model=EmpresaMiaOut)
@@ -72,7 +104,11 @@ async def obtener_mi_empresa(
         await _contexto(token, conn)
         empresa = await _mi_empresa(conn)
         if empresa is None:
-            raise ApiError(status.HTTP_404_NOT_FOUND, "DESCONOCIDO", "Todavía no hay datos guardados para esta cuenta.")
+            raise ApiError(
+                status.HTTP_404_NOT_FOUND,
+                "DESCONOCIDO",
+                "Todavía no hay datos guardados para esta cuenta.",
+            )
         return await _estado_completo(conn, empresa)
 
 
@@ -103,8 +139,14 @@ async def guardar_mi_empresa(
                            municipio = $6, departamento = $7, extranjera = $8
                      WHERE empresa_id = $1
                     """,
-                    empresa_id, payload.razon_social, payload.nit, payload.dv, payload.sector_id,
-                    payload.municipio, payload.departamento, payload.extranjera,
+                    empresa_id,
+                    payload.razon_social,
+                    payload.nit,
+                    payload.dv,
+                    payload.sector_id,
+                    payload.municipio,
+                    payload.departamento,
+                    payload.extranjera,
                 )
             else:
                 empresa_id = await conn.fetchval(
@@ -113,25 +155,42 @@ async def guardar_mi_empresa(
                     VALUES ($1, $2, $3, $4, $5, $6, $7)
                     RETURNING empresa_id
                     """,
-                    payload.razon_social, payload.nit, payload.dv, payload.sector_id,
-                    payload.municipio, payload.departamento, payload.extranjera,
+                    payload.razon_social,
+                    payload.nit,
+                    payload.dv,
+                    payload.sector_id,
+                    payload.municipio,
+                    payload.departamento,
+                    payload.extranjera,
                 )
         except asyncpg.UniqueViolationError as exc:
             raise ApiError(
-                status.HTTP_409_CONFLICT, "CONFLICTO",
+                status.HTTP_409_CONFLICT,
+                "CONFLICTO",
                 "Ese NIT ya está registrado por otra cuenta. Contacta al administrador para vincular el acceso.",
             ) from exc
         except asyncpg.CheckViolationError as exc:
             raise ApiError(
-                status.HTTP_422_UNPROCESSABLE_ENTITY, "VALIDACION",
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "VALIDACION",
                 "El dígito de verificación no corresponde al NIT.",
             ) from exc
         except asyncpg.ForeignKeyViolationError as exc:
-            raise ApiError(status.HTTP_422_UNPROCESSABLE_ENTITY, "VALIDACION", "El sector no es válido.") from exc
+            raise ApiError(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "VALIDACION",
+                "El sector no es válido.",
+            ) from exc
 
         valores = (
-            payload.tamano, payload.ingresos_rango, payload.personas, payload.vinculacion,
-            payload.vinculacion_detalle, payload.zonas, payload.territorio, payload.clientes,
+            payload.tamano,
+            payload.ingresos_rango,
+            payload.personas,
+            payload.vinculacion,
+            payload.vinculacion_detalle,
+            payload.zonas,
+            payload.territorio,
+            payload.clientes,
             payload.clientes_detalle,
         )
         ciclo_id = await conn.fetchval(
@@ -150,7 +209,8 @@ async def guardar_mi_empresa(
                        clientes_detalle = $10, actualizado_en = now()
                  WHERE ciclo_id = $1
                 """,
-                ciclo_id, *valores,
+                ciclo_id,
+                *valores,
             )
         else:
             await conn.execute(
@@ -160,7 +220,9 @@ async def guardar_mi_empresa(
                      vinculacion_detalle, zonas, territorio, clientes, clientes_detalle)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                 """,
-                empresa_id, anio_actual, *valores,
+                empresa_id,
+                anio_actual,
+                *valores,
             )
 
         empresa = await _mi_empresa(conn)
@@ -178,7 +240,8 @@ async def guardar_respuestas(
     cierre por materia, comentario final y matriz de priorización)."""
     if formato_id != FORMATO_RSE:
         raise ApiError(
-            status.HTTP_410_GONE, "VALIDACION",
+            status.HTTP_410_GONE,
+            "VALIDACION",
             "Ese formato fue retirado. El diagnóstico vigente es el Autodiagnóstico RSE Express.",
         )
 
@@ -187,22 +250,27 @@ async def guardar_respuestas(
         empresa = await _mi_empresa(conn)
         if empresa is None:
             raise ApiError(
-                status.HTTP_422_UNPROCESSABLE_ENTITY, "VALIDACION",
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "VALIDACION",
                 "Primero hay que guardar el perfil y el tamizaje de la empresa.",
             )
         tamizaje = await ultimo_tamizaje(conn, empresa["empresa_id"])
         if tamizaje is None:
             raise ApiError(
-                status.HTTP_422_UNPROCESSABLE_ENTITY, "VALIDACION",
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "VALIDACION",
                 "Primero hay que responder el tamizaje «Conozcamos su empresa».",
             )
-        diagnostico_id = await guardar_diagnostico(conn, empresa["empresa_id"], tamizaje.ciclo_id, payload)
+        diagnostico_id = await guardar_diagnostico(
+            conn, empresa["empresa_id"], tamizaje.ciclo_id, payload
+        )
         return await leer_diagnostico(conn, diagnostico_id)
 
 
 # ---------------------------------------------------------------------------
 # Análisis inteligente (Gemini)
 # ---------------------------------------------------------------------------
+
 
 def _error_ia(exc: ErrorIA) -> ApiError:
     return ApiError(exc.status_code, exc.codigo, exc.mensaje)
@@ -232,7 +300,8 @@ async def analisis_ia(
     """
     if formato_id != FORMATO_RSE:
         raise ApiError(
-            status.HTTP_410_GONE, "VALIDACION",
+            status.HTTP_410_GONE,
+            "VALIDACION",
             "Ese formato fue retirado. El diagnóstico vigente es el Autodiagnóstico RSE Express.",
         )
     settings = get_settings()
@@ -243,17 +312,24 @@ async def analisis_ia(
     async with pool.acquire() as conn, conn.transaction():
         usuario_id = await _contexto(token, conn)
         empresa = await _mi_empresa(conn)
-        tamizaje = await ultimo_tamizaje(conn, empresa["empresa_id"]) if empresa else None
+        tamizaje = (
+            await ultimo_tamizaje(conn, empresa["empresa_id"]) if empresa else None
+        )
         diagnostico_id = (
-            await diagnostico_vigente_id(conn, empresa["empresa_id"], tamizaje.ciclo_id) if tamizaje else None
+            await diagnostico_vigente_id(conn, empresa["empresa_id"], tamizaje.ciclo_id)
+            if tamizaje
+            else None
         )
         if diagnostico_id is None:
             # Código propio: el front lo distingue de un fallo de Gemini.
             raise ApiError(
-                422, "SIN_DIAGNOSTICO",
+                422,
+                "SIN_DIAGNOSTICO",
                 "Todavía no hay datos de la empresa ni un autodiagnóstico guardados para analizar.",
             )
-        organizacion = await leer_organizacion(conn, empresa["empresa_id"], tamizaje.ciclo_id)
+        organizacion = await leer_organizacion(
+            conn, empresa["empresa_id"], tamizaje.ciclo_id
+        )
         contexto = construir_contexto(contexto_organizacion(organizacion), resultados)
         firma = huella(contexto)
         try:
@@ -268,7 +344,10 @@ async def analisis_ia(
     try:
         servicio = obtener_servicio(settings)
         analisis = await generar_una_vez(
-            usuario_id, diagnostico_id, firma, settings.ia_max_generaciones_por_hora,
+            usuario_id,
+            diagnostico_id,
+            firma,
+            settings.ia_max_generaciones_por_hora,
             lambda: servicio.analizar(contexto, resultados.materias_aplicables),
         )
     except ErrorIA as exc:
@@ -279,13 +358,21 @@ async def analisis_ia(
     try:
         async with pool.acquire() as conn, conn.transaction():
             await _contexto(token, conn)
-            nuevo = await guardar_analisis(conn, diagnostico_id, analisis, firma, servicio.modelo, VERSION_PROMPT)
+            nuevo = await guardar_analisis(
+                conn, diagnostico_id, analisis, firma, servicio.modelo, VERSION_PROMPT
+            )
         return nuevo.salida(reutilizado=False)
     except asyncpg.UndefinedTableError:
         tabla_faltante()
     except asyncpg.PostgresError:
-        logger.exception("No se pudo guardar el análisis IA del diagnóstico %s", diagnostico_id)
+        logger.exception(
+            "No se pudo guardar el análisis IA del diagnóstico %s", diagnostico_id
+        )
     return AnalisisIAOut(
-        diagnostico_id=diagnostico_id, analisis=analisis, generado_en=datetime.now(timezone.utc),
-        modelo=servicio.modelo, version_prompt=VERSION_PROMPT, reutilizado=False,
+        diagnostico_id=diagnostico_id,
+        analisis=analisis,
+        generado_en=datetime.now(timezone.utc),
+        modelo=servicio.modelo,
+        version_prompt=VERSION_PROMPT,
+        reutilizado=False,
     )

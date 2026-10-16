@@ -19,7 +19,10 @@ def desde_postgres(exc: asyncpg.PostgresError) -> ApiError:
     correcto para el front."""
     mensaje = str(exc.args[0]) if exc.args else str(exc)
 
-    if isinstance(exc, asyncpg.UniqueViolationError) or "Ya existe una cuenta registrada" in mensaje:
+    if (
+        isinstance(exc, asyncpg.UniqueViolationError)
+        or "Ya existe una cuenta registrada" in mensaje
+    ):
         return ApiError(status.HTTP_409_CONFLICT, "EMAIL_YA_REGISTRADO", mensaje)
 
     if "contraseña debe tener" in mensaje or "Correo electrónico inválido" in mensaje:
@@ -39,7 +42,10 @@ def desde_postgres(exc: asyncpg.PostgresError) -> ApiError:
     if "El usuario no existe" in mensaje:
         return ApiError(status.HTTP_404_NOT_FOUND, "DESCONOCIDO", mensaje)
 
-    if "La cuenta ya fue eliminada" in mensaje or "Ya existe una cuenta activa con ese correo" in mensaje:
+    if (
+        "La cuenta ya fue eliminada" in mensaje
+        or "Ya existe una cuenta activa con ese correo" in mensaje
+    ):
         return ApiError(status.HTTP_409_CONFLICT, "CONFLICTO", mensaje)
 
     if (
