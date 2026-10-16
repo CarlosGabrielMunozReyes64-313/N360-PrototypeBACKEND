@@ -534,6 +534,12 @@ async def listar_empresas_detalle(conn: asyncpg.Connection = Depends(requerir_ad
     más reciente), el avance de su autodiagnóstico RSE Express en ese ciclo
     y la cuenta que sirve de contacto (nombre y correo).
 
+    Solo salen las empresas que conservan al menos una cuenta sin eliminar
+    (quien la registró u otra vinculada). Al eliminar una cuenta con historial
+    la cuenta se archiva pero la empresa no; sin este filtro la empresa seguía
+    en «Datos de empresa» sin nadie detrás. Si la cuenta se restaura, la
+    empresa vuelve a aparecer. Una cuenta desactivada (no eliminada) cuenta.
+
     El contacto es quien registró la empresa; si esa cuenta se eliminó, otra
     cuenta de empresa vinculada (la más antigua). Si no queda ninguna, los
     dos campos van en NULL: no se inventa un contacto."""
@@ -585,6 +591,14 @@ async def listar_empresas_detalle(conn: asyncpg.Connection = Depends(requerir_ad
              LIMIT 1
           ) ct ON TRUE
          WHERE e.archivado_en IS NULL
+           AND EXISTS (
+            SELECT 1
+              FROM nexus360.usuario u
+             WHERE u.archivado_en IS NULL
+               AND (u.usuario_id = e.creado_por
+                    OR EXISTS (SELECT 1 FROM nexus360.usuario_empresa ue
+                                WHERE ue.empresa_id = e.empresa_id AND ue.usuario_id = u.usuario_id))
+          )
          ORDER BY e.creado_en DESC
         """
     )
