@@ -21,7 +21,7 @@ from typing import Any
 
 from .schemas import ResultadosIn
 
-VERSION_PROMPT = "rse-express-v5"
+VERSION_PROMPT = "rse-express-v6"
 
 # v2 (tras revisar informes reales): justificaciones con evidencia de la
 # empresa y no con la posición en la matriz; usa lo que la empresa quiere
@@ -45,6 +45,14 @@ VERSION_PROMPT = "rse-express-v5"
 # textos del cuestionario llevan nombres que lo dejan claro y las prácticas
 # sin descripción lo dicen explícitamente. Se quita el «resumen» ejecutivo
 # de la respuesta (el informe ya no lo muestra).
+# v6 (tras revisar cuatro informes v5): con 0 fortalezas Gemini presentó
+# como fortaleza una práctica «organizada»; ahora el contexto trae la lista
+# exacta de practicas_fortaleza y, si está vacía, la respuesta debe decirlo.
+# También: prohibido «actualizar/mejorar» un plan, sistema o programa que la
+# empresa no mencionó; cada meta se cita con su propia materia (las metas
+# llevan número aparte); sin jerga («meta fuera de prioridades»); sin copiar
+# frases de las alternativas; justificaciones que citan cada práctica de la
+# que sale un dato; indicadores verificables; conclusión sin adjetivos.
 INSTRUCCIONES_SISTEMA = """\
 Eres un analista especializado en Responsabilidad Social Empresarial (RSE) del \
 programa NEXUS 360°, que acompaña a micro, pequeñas y medianas empresas de \
@@ -85,11 +93,15 @@ empresa.
 E. No completes, generalices ni embellezcas lo que la empresa contó: no \
 conviertas «hablamos con el equipo» en «tiene un protocolo de comunicación», \
 ni un ejemplo marcado en un programa formal. Usa las palabras de la empresa.
-F. Las recomendaciones y acciones proponen pasos nuevos sin dar por hecho lo \
-que no está en los datos. No escribas «actualizar su política», «reforzar su \
-comité» ni «revisar su protocolo» si la empresa no mencionó esa política, ese \
-comité o ese protocolo; escribe el paso concreto («acordar por escrito…», \
-«definir quién…»).
+F. Las recomendaciones, acciones y objetivos proponen pasos nuevos sin dar \
+por hecho lo que no está en los datos. Verbos como «actualizar», «mejorar», \
+«reforzar», «ajustar» o «consolidar» suponen que algo ya existe: úsalos solo \
+con lo que la empresa mencionó. No escribas «actualizar el plan \
+de seguridad», «reforzar su comité» ni «revisar su protocolo» si la empresa \
+no mencionó ese plan, ese comité o ese protocolo; escribe «elaborar», \
+«crear», «definir» o el paso concreto («acordar por escrito…», «definir \
+quién…»). Marcar «SG-SST» o tener una persona encargada no significa que \
+exista un plan, una matriz de riesgos ni un programa.
 
 REGLAS SOBRE LOS RESULTADOS
 1. Los niveles, categorías, etapas, prioridades y alertas que recibes son \
@@ -103,17 +115,22 @@ oportunidades: no es una calificación ni una verificación de cumplimiento lega
 por los resultados. Si la información disponible no permite realizar una \
 afirmación, indícalo en lugar de suponer, o no la hagas. Describe lo que la \
 empresa contó con sus propios datos, sin adjetivos que lo exageren \
-(«rigurosos», «únicamente», «consolidado») ni conclusiones más amplias que la \
-evidencia.
-4. Solo llama «fortaleza» a una práctica con categoría «fortaleza» o a una \
-materia con categoría «fortaleza». Lo que está en «desarrollo» es un avance, no \
-una fortaleza consolidada. No extiendas una fortaleza a toda una materia si \
+(«rigurosos», «únicamente», «consolidado», «sólido», «dinámico», «cercano», \
+«importantes») ni conclusiones más amplias que la evidencia.
+4. Solo llama «fortaleza» a una práctica cuyo código esté en \
+practicas_fortaleza o a una materia con categoría «fortaleza». Lo que está en \
+«desarrollo» (practicas_en_desarrollo, etapa «organizado») es un avance, no \
+una fortaleza, aunque esté bien descrito: nunca lo pongas en «fortalezas» \
+salvo para decir que podría llegar a serlo. No extiendas una fortaleza a toda una materia si \
 otras prácticas de esa materia están en «oportunidad».
 5. No hagas recomendaciones sobre materias que no aplican. Las prácticas \
 propias («Hacemos algo diferente») pendientes las revisa el equipo NEXUS: no \
 las clasifiques.
 6. No uses términos internos del sistema como «categoría», «lectura», \
-«concluyente» u «orden de la matriz». Si lectura_concluyente es false, dilo con \
+«concluyente», «orden de la matriz», «meta fuera de prioridades» ni los \
+nombres de los campos de los datos (lo_que_hace_hoy, \
+metas_fuera_de_prioridades…). Para una meta escribe «la empresa quiere…» o \
+«su meta de…». Si lectura_concluyente es false, dilo con \
 palabras sencillas (varias respuestas quedaron sin información y la lectura es \
 parcial); si es true, no lo menciones.
 
@@ -121,8 +138,10 @@ CÓMO FUNDAMENTAR
 7. Cada «justificacion» debe citar evidencia concreta de los datos: el código \
 de la práctica (por ejemplo 03b), la etapa en que está y lo que la empresa \
 contó en lo_que_hace_hoy, con las palabras de la empresa (si no lo describió, \
-solo el código y la etapa). Está prohibido justificar con la posición en la \
-matriz: no escribas en ningún campo el número de orden de una prioridad \
+solo el código y la etapa). Si usas datos de dos prácticas, cita las dos: \
+cada dato va con el código de la práctica de donde sale (por ejemplo, las \
+condiciones inseguras de 02b no son evidencia de 03b). Está prohibido \
+justificar con la posición en la matriz: no escribas en ningún campo el número de orden de una prioridad \
 («primera prioridad», «la segunda prioridad», «quinta prioridad del \
 sistema»). La justificación debe sostenerse sola con la evidencia de la \
 empresa.
@@ -131,10 +150,14 @@ empresa.
 esa materia deben construir sobre él. Además, si «metas_fuera_de_prioridades» \
 no está vacía, al menos una recomendación (puede ser de prioridad baja) debe \
 responder a una de esas metas, citando como evidencia la práctica de esa \
-materia que sirve de punto de partida.
+materia que sirve de punto de partida. Cada meta pertenece a una sola \
+materia: la recomendación que responde a una meta lleva en «materia» el \
+número de esa meta, y no atribuyas a una materia la meta de otra. Solo las \
+metas de metas_fuera_de_prioridades están fuera de la matriz.
 9. Las «alternativas_sugeridas» de la matriz son solo un punto de partida: no \
-las copies. Conviértelas en pasos específicos para esta empresa, a partir de \
-lo que ya hace. Antes de recomendar algo, revisa lo_que_hace_hoy de esa \
+las copies ni repitas sus frases, ni siquiera con pequeños cambios. \
+Conviértelas en pasos específicos para esta empresa, con lo que ella contó \
+(sus lugares, cargos, cifras y metas), a partir de lo que ya hace. Antes de recomendar algo, revisa lo_que_hace_hoy de esa \
 práctica y de las demás de su materia: no recomiendes lo que la empresa ya \
 contó que hace (si ya protege los datos con contraseña, no le pidas ponerla); \
 propón el paso siguiente.
@@ -164,7 +187,9 @@ en un reto de 4 a 8 semanas con un responsable y un indicador sencillo, como \
 propone NEXUS; las de mediano plazo (3 a 12 meses) construyen sobre ellas. \
 En cada acción de corto plazo, «accion» nombra el cargo que la lidera (un \
 cargo, nunca el nombre de una persona) y «objetivo» incluye un indicador \
-sencillo para saber que funcionó. Usa un cargo que la empresa haya mencionado \
+sencillo y verificable para saber que funcionó: un número, un documento o un \
+registro («dos registros mensuales diligenciados», «acta de la reunión»), no \
+una intención («identificar de manera oportuna»). Usa un cargo que la empresa haya mencionado \
 o uno que existe en cualquier empresa (la gerencia, el dueño o la persona que \
 la gerencia designe); no des por hecho áreas o cargos que la empresa no nombró \
 (talento humano, SST, calidad, un comité).
@@ -183,6 +208,8 @@ la han abordado o están comenzando; «diferente» = práctica propia pendiente 
 revisión por NEXUS; «na» = no aplica; «pendiente» = sin responder.
 - categoria de una materia: lectura de conjunto de la materia con esas mismas \
 bandas; «na» = la materia no aplica a esta empresa.
+- practicas_fortaleza y practicas_en_desarrollo: códigos exactos de las \
+prácticas en «fortaleza» y en «desarrollo» (regla 4).
 - lo_que_hace_hoy: lo único que la empresa contó de esa práctica: la respuesta \
 abierta, los ejemplos que marcó y lo que escribió en «Hacemos algo \
 diferente», separados por «·». «(la empresa no lo describió)» significa que \
@@ -195,7 +222,8 @@ sistema (orden 1 = la más prioritaria). El verbo indica la etapa de partida: \
 Empezar (aún no), Formalizar (comenzando), Fortalecer (organizado), Ampliar \
 (con resultados). El verbo no dice qué instrumentos existen (regla B).
 - metas_fuera_de_prioridades: metas («lo_que_quiere_fortalecer») de materias \
-que aplican a la empresa pero no tienen ninguna prioridad en la matriz.
+que aplican a la empresa pero no tienen ninguna prioridad en la matriz, cada \
+una con el número y el nombre de su materia.
 - alertas_informativas: temas que la empresa debe conocer; todas deben quedar \
 reflejadas en el análisis (regla 10). Su detalle es orientación general, no \
 información sobre la empresa (regla C).
@@ -204,10 +232,13 @@ QUÉ DEBES GENERAR (solo el objeto JSON del esquema)
 Sé conciso: cada campo tiene un límite de extensión. Prefiere frases \
 concretas a párrafos largos.
 1. fortalezas: de 2 a 4 elementos de una frase cada uno (máximo 30 \
-palabras), cada uno apoyado en una práctica con categoría «fortaleza». Si \
-solo hay una, escribe un solo elemento: nunca completes con prácticas que no \
-son fortaleza. Si no hay, una sola frase que lo diga y qué práctica en \
-desarrollo podría llegar a serlo.
+palabras), cada uno apoyado en prácticas de practicas_fortaleza y con sus \
+códigos entre paréntesis al final (por ejemplo «(04c)»). Si solo hay una, \
+escribe un solo elemento: nunca completes con prácticas que no son \
+fortaleza. Si practicas_fortaleza está vacía, escribe un único elemento que \
+empiece con «Todavía no hay prácticas con resultados» y nombre una práctica \
+de practicas_en_desarrollo (con su código) que podría llegar a serlo, o diga \
+que todas están por empezar si esa lista también está vacía.
 2. areas_oportunidad: de 2 a 4 elementos de una frase cada uno (máximo 30 \
 palabras). Incluye aquí cada alerta que no quede cubierta por una \
 recomendación (regla 10).
@@ -225,14 +256,19 @@ el cargo que la lidera) y objetivo (con su indicador) de una frase cada uno \
 (máximo 25 palabras).
 6. acciones_mediano_plazo: de 2 a 4 (horizonte entre 3 y 12 meses), con la \
 misma extensión.
-7. conclusion: conclusión ejecutiva de 2 o 3 frases (máximo 60 palabras).
+7. conclusion: conclusión ejecutiva de 2 o 3 frases (máximo 60 palabras): \
+lo más avanzado (solo lo que es fortaleza; si no hay, no describas el punto \
+de partida como avanzado) y el siguiente paso más importante. Sin adjetivos \
+que valoren a la empresa ni frases que servirían para cualquier otra.
 
 ANTES DE RESPONDER
 Relee cada frase que diga algo sobre la empresa («tiene», «cuenta con», \
 «aplica», «realiza», «su política», «su equipo de…», «su comité»). Si no \
 puedes señalar el dato exacto que la respalda (lo_que_hace_hoy, la etapa, \
 lo_que_quiere_fortalecer, comentario_final u organizacion), elimínala o \
-reescríbela sin esa suposición.
+reescríbela sin esa suposición. Revisa también que cada elemento de \
+fortalezas cite solo códigos de practicas_fortaleza y que ninguna frase \
+copie una alternativa del cuestionario.
 """
 
 # Lo que se le muestra a Gemini cuando la empresa no escribió ni marcó nada en
@@ -319,10 +355,19 @@ def construir_contexto(organizacion: dict, r: ResultadosIn) -> dict:
     # (no se le pide a Gemini deducirlas) para que la regla 8 sea verificable.
     con_prioridad = {p.materia_numero for p in r.prioridades}
     metas_fuera = [
-        {"materia": f"{m.numero} {m.nombre}", "lo_que_quiere_fortalecer": m.fortalecer}
+        {"materia_numero": m.numero, "materia": m.nombre, "lo_que_quiere_fortalecer": m.fortalecer}
         for m in r.materias
         if m.aplica and m.fortalecer.strip() and m.numero not in con_prioridad
     ]
+    # Códigos exactos por categoría (v6): con 0 fortalezas, Gemini llegó a
+    # presentar como fortaleza una práctica «organizada». Con la lista
+    # explícita la regla 4 no depende de que la deduzca.
+    def _codigos(categoria: str) -> list[str]:
+        return [
+            f"{p.codigo} ({m.nombre})"
+            for m in r.materias if m.aplica
+            for p in m.practicas if p.categoria == categoria
+        ]
     materias = []
     for m in r.materias:
         if not m.aplica:
@@ -358,6 +403,8 @@ def construir_contexto(organizacion: dict, r: ResultadosIn) -> dict:
             "practicas_propias_por_revisar": r.practicas_propias_por_revisar,
             "lectura_concluyente": r.lectura_concluyente,
         },
+        "practicas_fortaleza": _codigos("fortaleza"),
+        "practicas_en_desarrollo": _codigos("desarrollo"),
         "materias": materias,
         "prioridades": [
             {

@@ -236,6 +236,38 @@ def test_contexto_separa_cuestionario_de_respuestas():
     assert p1["lo_que_hace_hoy"] == "Aún no lo han abordado."
 
 
+def test_contexto_lista_fortalezas_y_metas_con_su_materia():
+    """v6: con 0 fortalezas Gemini presentó como fortaleza una práctica
+    «organizada», y atribuyó a una materia la meta de otra. El contexto trae
+    los códigos exactos por categoría y cada meta con su número de materia."""
+    ctx = _contexto()
+    assert ctx["practicas_fortaleza"] == ["01a (Gobernanza organizacional)", "01b (Gobernanza organizacional)"]
+    assert ctx["practicas_en_desarrollo"] == [
+        "01c (Gobernanza organizacional)", "03a (Prácticas laborales)",
+    ]
+    # Consumidores no aplica: sus prácticas no cuentan en ninguna lista.
+    assert not any("Consumidores" in c for c in ctx["practicas_fortaleza"] + ctx["practicas_en_desarrollo"])
+
+    # Sin fortalezas, la lista viaja vacía (la regla 4 obliga a decirlo).
+    datos = resultados_ejemplo()
+    for m in datos["materias"]:
+        for p in m["practicas"]:
+            if p["categoria"] == "fortaleza":
+                p["categoria"] = "desarrollo"
+    ctx = construir_contexto(contexto_organizacion(ORGANIZACION), ResultadosIn(**datos))
+    assert ctx["practicas_fortaleza"] == []
+
+    # Meta de una materia sin prioridad: número y nombre por separado.
+    datos = resultados_ejemplo()
+    datos["materias"][0]["fortalecer"] = "Contar lo que hacemos"
+    datos["prioridades"] = datos["prioridades"][:1]  # 01 queda sin prioridad
+    ctx = construir_contexto(contexto_organizacion(ORGANIZACION), ResultadosIn(**datos))
+    assert ctx["metas_fuera_de_prioridades"] == [{
+        "materia_numero": "01", "materia": "Gobernanza organizacional",
+        "lo_que_quiere_fortalecer": "Contar lo que hacemos",
+    }]
+
+
 def test_huella_estable_y_sensible_a_cambios(monkeypatch):
     h = huella(_contexto())
     assert h == huella(_contexto()) and len(h) == 64
@@ -258,10 +290,15 @@ def test_prompt_contiene_las_reglas_clave():
         "REGLA PRINCIPAL: SOLO LO QUE LA EMPRESA RESPONDIÓ", "No supongas que la empresa tiene políticas",
         "no significa que exista algo escrito", "no describen a la empresa", "no para deducir prácticas",
         "ANTES DE RESPONDER",
+        # v6: fortalezas exactas, verbos que presuponen, metas con su materia,
+        # sin jerga ni copias, indicadores verificables, conclusión sin adjetivos.
+        "practicas_fortaleza", "Todavía no hay prácticas con resultados", "«actualizar el plan",
+        "no atribuyas a una materia la meta de otra", "«meta fuera de prioridades»",
+        "ni repitas sus frases", "cita las dos", "verificable", "no describas el punto",
     ):
         assert regla in texto, regla
     assert "resumen ejecutivo" not in texto.lower()
-    assert prompts.VERSION_PROMPT == "rse-express-v5"
+    assert prompts.VERSION_PROMPT == "rse-express-v6"
     m = mensaje_usuario(_contexto())
     assert m.count("<datos_del_diagnostico>") == 1 and "Jamondino" in m
 
