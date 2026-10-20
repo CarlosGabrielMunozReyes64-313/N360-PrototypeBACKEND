@@ -163,10 +163,13 @@ class AccionIA(BaseModel):
 
 
 class AnalisisIA(BaseModel):
-    """Interpretación del diagnóstico. Solo texto y listas: ningún puntaje."""
+    """Interpretación del diagnóstico. Solo texto y listas: ningún puntaje.
+
+    Sin «resumen» ejecutivo desde el prompt v5: el informe ya no lo muestra.
+    Un análisis guardado antes que todavía lo traiga sigue siendo válido
+    (extra="ignore"), aunque se regenera por el cambio de VERSION_PROMPT."""
     model_config = ConfigDict(extra="ignore")
 
-    resumen: _texto(3000, 20) = Field(description="Resumen ejecutivo del diagnóstico.")
     fortalezas: list[Item] = Field(description="Fortalezas que muestran los resultados.")
     areas_oportunidad: list[Item] = Field(description="Áreas de oportunidad que muestran los resultados.")
     prioridades: list[Item] = Field(description="Prioridades, en orden, fundamentadas en la matriz del sistema.")
