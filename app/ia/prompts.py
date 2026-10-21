@@ -1,7 +1,8 @@
 """Prompt del análisis inteligente y construcción del contexto para Gemini.
 
 Qué se le envía a Gemini (y qué no):
-  * SÍ: sector, tamaño, número de personas, tipo de clientes, territorio, y
+  * SÍ: sector, tamaño, número de personas, tipo de clientes, territorio
+    (lugares donde opera y comunidades o vecinos cercanos), y
     los resultados que el motor ya calculó (niveles, categorías, prioridades,
     alertas) con lo que la empresa contó de sus prácticas.
   * NO: razón social, NIT, dígito de verificación, identificadores internos,
@@ -21,7 +22,7 @@ from typing import Any
 
 from .schemas import ResultadosIn
 
-VERSION_PROMPT = "rse-express-v6"
+VERSION_PROMPT = "rse-express-v7"
 
 # v2 (tras revisar informes reales): justificaciones con evidencia de la
 # empresa y no con la posición en la matriz; usa lo que la empresa quiere
@@ -53,6 +54,10 @@ VERSION_PROMPT = "rse-express-v6"
 # llevan número aparte); sin jerga («meta fuera de prioridades»); sin copiar
 # frases de las alternativas; justificaciones que citan cada práctica de la
 # que sale un dato; indicadores verificables; conclusión sin adjetivos.
+# v7: la T5 del tamizaje se dividió en T5a (lugares) y T5b (comunidades o
+# vecinos): el contexto separa «territorio» de «comunidades_y_vecinos» y
+# trae «vecinos_detalle». Los ejemplos del cuestionario ahora son frases
+# descriptivas; se pide no agregarles detalles que no tienen.
 INSTRUCCIONES_SISTEMA = """\
 Eres un analista especializado en Responsabilidad Social Empresarial (RSE) del \
 programa NEXUS 360°, que acompaña a micro, pequeñas y medianas empresas de \
@@ -71,7 +76,10 @@ certificaciones, presupuestos, cargos o áreas, registros, indicadores ni \
 documentos de ningún tipo, salvo que la empresa lo haya escrito o marcado en \
 sus respuestas. Por ejemplo, solo puedes decir que la empresa tiene una \
 política si en lo_que_hace_hoy aparece una política (por ejemplo, marcó \
-«Política escrita»); si no aparece, no la menciones como algo que existe. \
+«Tenemos una política escrita de responsabilidad social…»); si no aparece, \
+no la menciones como algo que existe. Los ejemplos marcados son frases \
+descriptivas: tómalos como lo que la empresa dice hacer, sin agregarles \
+detalles que la frase no tiene. \
 Tampoco afirmes que le falta un documento concreto: describe su punto de \
 partida con la etapa que eligió y con lo que contó.
 B. La etapa dice qué tan avanzada ve la empresa esa práctica, no qué \
@@ -87,7 +95,8 @@ preguntas, sugerencias u orientación general. Que una alerta hable, por \
 ejemplo, de una «política de tratamiento» de datos no significa que la \
 empresa la tenga ni que no la tenga.
 D. Los datos de organizacion (sector, tamaño, personas, vinculación, \
-clientes, territorio) sirven para ajustar la escala de las recomendaciones, \
+clientes, territorio, comunidades_y_vecinos) sirven para ajustar la escala \
+de las recomendaciones, \
 no para deducir prácticas: no infieras de ellos qué hace o qué tiene la \
 empresa.
 E. No completes, generalices ni embellezcas lo que la empresa contó: no \
@@ -162,7 +171,8 @@ práctica y de las demás de su materia: no recomiendes lo que la empresa ya \
 contó que hace (si ya protege los datos con contraseña, no le pidas ponerla); \
 propón el paso siguiente.
 10. Ten en cuenta el contexto de la organización (tamaño, número de \
-personas, territorio, clientes) solo para ajustar la escala de lo que \
+personas, territorio, comunidades y vecinos, clientes) solo para ajustar \
+la escala de lo que \
 recomiendas (regla D). Cada alerta de «alertas_informativas» debe quedar \
 reflejada en al menos un elemento de areas_oportunidad o en una \
 recomendación, aunque su tema no esté entre las prioridades: no omitas \
@@ -303,13 +313,25 @@ _VINCULACIONES = {
     "temporada": "Personal por temporada",
     "otra": "Otra forma",
 }
-_ZONAS = {
+# T5a · lugares donde opera.
+_LUGARES = {
     "barrios": "Barrios",
+    "comercial": "Centro o zona comercial",
+    "industrial": "Zona industrial o de bodegas",
     "veredas": "Veredas",
     "rural": "Zonas rurales",
+    "otras": "Otros lugares",
+}
+# T5b · comunidades o vecinos cercanos.
+_VECINOS = {
+    "viviendas": "Viviendas o familias vecinas",
+    "instituciones": "Escuelas, centros de salud o iglesias",
+    "campesinos": "Fincas o familias campesinas",
+    "negocios": "Otros negocios o empresas",
     "indigenas": "Comunidades indígenas",
     "afro": "Comunidades afrodescendientes",
-    "otras": "Otras",
+    "otros_vecinos": "Otros vecinos",
+    "ninguno": "No hay comunidades ni vecinos cerca",
 }
 _CLIENTES = {
     "personas": "Personas u hogares",
@@ -328,9 +350,14 @@ def contexto_organizacion(fila: Any) -> dict:
     """Datos de la organización útiles para el análisis, leídos de la base.
 
     `fila` trae: sector, municipio, departamento, tamano, ingresos_rango,
-    personas, vinculacion, zonas, territorio y clientes. Deliberadamente NO
-    trae razón social, NIT ni identificadores.
+    personas, vinculacion, zonas, territorio, vecinos y clientes.
+    Deliberadamente NO trae razón social, NIT ni identificadores.
+
+    `zonas` reúne las respuestas de T5a (lugares) y T5b (comunidades o
+    vecinos); aquí se separan. `vecinos` puede faltar (tamizajes anteriores
+    a la división de la T5 o filas armadas a mano).
     """
+    zonas = fila["zonas"] or []
     org: dict[str, Any] = {
         "sector": fila["sector"],
         "ubicacion": ", ".join(
@@ -340,12 +367,16 @@ def contexto_organizacion(fila: Any) -> dict:
         "personas_que_trabajan": fila["personas"],
         "vinculacion": [_VINCULACIONES.get(v, v) for v in (fila["vinculacion"] or [])],
         "clientes": _CLIENTES.get(fila["clientes"], fila["clientes"]),
-        "territorio": [_ZONAS.get(z, z) for z in (fila["zonas"] or [])],
+        "territorio": [_LUGARES[z] for z in zonas if z in _LUGARES],
+        "comunidades_y_vecinos": [_VECINOS[z] for z in zonas if z in _VECINOS],
     }
     if fila["ingresos_rango"] in _INGRESOS:
         org["ingresos_anuales"] = _INGRESOS[fila["ingresos_rango"]]
     if fila["territorio"]:
         org["territorio_detalle"] = _recortar(fila["territorio"], 300)
+    vecinos = fila.get("vecinos") if hasattr(fila, "get") else None
+    if vecinos:
+        org["vecinos_detalle"] = _recortar(vecinos, 300)
     return org
 
 

@@ -77,7 +77,7 @@ def _cuenta(cliente: TestClient) -> dict:
     r = cliente.put("/api/empresa/mio", headers=h, json={
         "razon_social": f"Empresa Secreta {sufijo}", "nit": nit, "dv": _dv(nit), "sector_id": "agroindustrial",
         "municipio": "Pasto", "departamento": "Nariño", "tamano": "pequena", "personas": 32,
-        "vinculacion": ["laboral"], "zonas": ["veredas"], "clientes": "mezcla",
+        "vinculacion": ["laboral"], "zonas": ["veredas", "campesinos"], "clientes": "mezcla",
     })
     assert r.status_code == 200, r.text
     return {"h": h, "nit": nit, "razon": f"Empresa Secreta {sufijo}"}

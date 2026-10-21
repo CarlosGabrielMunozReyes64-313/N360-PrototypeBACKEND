@@ -67,7 +67,7 @@ def _crear_empresa(cliente: TestClient, cuenta: dict) -> str:
     r = cliente.put("/api/empresa/mio", headers=cuenta["h"], json={
         "razon_social": razon, "nit": nit, "dv": _dv(nit), "sector_id": "servicios",
         "municipio": "Candelaria", "departamento": "Valle del Cauca", "tamano": "pequena", "personas": 20,
-        "vinculacion": ["laboral"], "zonas": ["barrios"], "clientes": "mezcla",
+        "vinculacion": ["laboral"], "zonas": ["barrios"], "vecinos": "Colegio al frente", "clientes": "mezcla",
     })
     assert r.status_code == 200, r.text
     return razon

@@ -162,7 +162,7 @@ class EmpresaActividadOut(BaseModel):
 
 
 class TamizajeActividadOut(BaseModel):
-    """Un tamizaje «Conozcamos su empresa» (T1, T2, T5 y T6). Se guarda la
+    """Un tamizaje «Conozcamos su empresa» (T1, T2, T5a, T5b y T6). Se guarda la
     fecha de creación y la de la última edición, no el historial completo."""
 
     ciclo_id: UUID
@@ -175,6 +175,7 @@ class TamizajeActividadOut(BaseModel):
     vinculacion: list[str]
     zonas: list[str]
     territorio: str | None
+    vecinos: str | None = None
     clientes: str
     creado_en: datetime
     actualizado_en: datetime
@@ -334,6 +335,7 @@ class EmpresaDetalleOut(BaseModel):
     vinculacion_detalle: str | None
     zonas: list[str] | None
     territorio: str | None
+    vecinos: str | None = None
     clientes: str | None
     clientes_detalle: str | None
     # Criterio de selección del piloto: entre 10 y 50 personas (T2).

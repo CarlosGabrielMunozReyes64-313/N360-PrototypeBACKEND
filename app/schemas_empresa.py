@@ -19,8 +19,18 @@ Tamano = Literal["micro", "pequena", "mediana", "nose"]
 RangoIngresos = Literal["menos_1000m", "1000m_10000m", "10000m_50000m", "mas_50000m", "no_indica"]
 # T2 · cómo están vinculadas las personas que trabajan con la empresa.
 Vinculacion = Literal["laboral", "servicios", "socios", "temporada", "otra"]
-# T5 · lugares y comunidades cercanas.
-Zona = Literal["barrios", "veredas", "rural", "indigenas", "afro", "otras"]
+# T5a · ¿En qué lugares desarrolla su actividad?
+LUGARES = ("barrios", "comercial", "industrial", "veredas", "rural", "otras")
+# T5b · ¿Qué comunidades o vecinos están cerca de su operación?
+# «ninguno» = «No hay comunidades ni vecinos cerca» (excluye a los demás).
+VECINOS = ("viviendas", "instituciones", "campesinos", "negocios", "indigenas", "afro", "otros_vecinos", "ninguno")
+# T5a y T5b comparten la lista `zonas` (cada código pertenece a una sola de
+# las dos preguntas); así los tamizajes guardados antes de dividir la T5
+# siguen siendo válidos. Mismos códigos que src/data/tamizaje.ts.
+Zona = Literal[
+    "barrios", "comercial", "industrial", "veredas", "rural", "otras",
+    "viviendas", "instituciones", "campesinos", "negocios", "indigenas", "afro", "otros_vecinos", "ninguno",
+]
 # T6 · ¿Quiénes son principalmente sus clientes?
 TipoCliente = Literal["personas", "empresas", "publicas", "mezcla"]
 
@@ -55,12 +65,15 @@ class EmpresaIn(BaseModel):
     personas: int = Field(gt=0, le=1_000_000)
     vinculacion: list[Vinculacion] = Field(min_length=1, max_length=5)
     vinculacion_detalle: str | None = Field(default=None, max_length=1000)
-    zonas: list[Zona] = Field(default_factory=list, max_length=6)
+    zonas: list[Zona] = Field(default_factory=list, max_length=14)
+    # T5a · texto libre sobre los lugares.
     territorio: str | None = Field(default=None, max_length=2000)
+    # T5b · texto libre sobre las comunidades o vecinos cercanos.
+    vecinos: str | None = Field(default=None, max_length=2000)
     clientes: TipoCliente
     clientes_detalle: str | None = Field(default=None, max_length=1000)
 
-    @field_validator("vinculacion_detalle", "territorio", "clientes_detalle")
+    @field_validator("vinculacion_detalle", "territorio", "vecinos", "clientes_detalle")
     @classmethod
     def _texto_opcional(cls, v: str | None) -> str | None:
         return _limpiar(v)
@@ -72,8 +85,19 @@ class EmpresaIn(BaseModel):
 
     @model_validator(mode="after")
     def _territorio_obligatorio(self) -> "EmpresaIn":
-        if not self.zonas and not self.territorio:
+        lugares = [z for z in self.zonas if z in LUGARES]
+        vecinos = [z for z in self.zonas if z in VECINOS]
+        if not lugares and not self.territorio:
             raise ValueError("Cuéntenos dónde desarrolla su actividad: marque un lugar o escríbalo.")
+        if not vecinos and not self.vecinos:
+            raise ValueError(
+                "Cuéntenos qué comunidades o vecinos están cerca de su operación: marque una opción "
+                "(también puede marcar que no hay) o escríbalo."
+            )
+        if "ninguno" in vecinos and len(vecinos) > 1:
+            raise ValueError(
+                "«No hay comunidades ni vecinos cerca» no se puede marcar junto con otros vecinos."
+            )
         return self
 
 
@@ -98,6 +122,8 @@ class TamizajeOut(BaseModel):
     vinculacion_detalle: str | None
     zonas: list[str]
     territorio: str | None
+    # None en los tamizajes guardados antes de dividir la T5.
+    vecinos: str | None = None
     clientes: str
     clientes_detalle: str | None
     actualizado_en: datetime

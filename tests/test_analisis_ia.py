@@ -93,6 +93,7 @@ ORGANIZACION = {
     "sector": "Agroindustrial", "municipio": "Pasto", "departamento": "Nariño", "tamano": "pequena",
     "ingresos_rango": "no_indica", "personas": 32, "vinculacion": ["laboral", "temporada"],
     "zonas": ["veredas", "indigenas"], "territorio": "Vereda Jamondino", "clientes": "mezcla",
+    "vecinos": "Resguardo a 3 km de la planta",
 }
 
 
@@ -298,7 +299,9 @@ def test_prompt_contiene_las_reglas_clave():
     ):
         assert regla in texto, regla
     assert "resumen ejecutivo" not in texto.lower()
-    assert prompts.VERSION_PROMPT == "rse-express-v6"
+    # v7: T5 dividida en lugares y vecinos; ejemplos descriptivos.
+    assert "comunidades_y_vecinos" in texto and "frases descriptivas" in texto
+    assert prompts.VERSION_PROMPT == "rse-express-v7"
     m = mensaje_usuario(_contexto())
     assert m.count("<datos_del_diagnostico>") == 1 and "Jamondino" in m
 
@@ -502,3 +505,15 @@ def test_sin_el_paquete_google_genai_el_backend_igual_arranca():
         capture_output=True, text=True, timeout=60,
     )
     assert r.returncode == 0 and r.stdout.strip() == "ok", r.stderr
+
+
+def test_contexto_separa_lugares_de_vecinos():
+    """T5a y T5b comparten `zonas` en la base; la IA las recibe separadas."""
+    org = contexto_organizacion(ORGANIZACION)
+    assert org["territorio"] == ["Veredas"]
+    assert org["comunidades_y_vecinos"] == ["Comunidades indígenas"]
+    assert org["territorio_detalle"] == "Vereda Jamondino"
+    assert org["vecinos_detalle"] == "Resguardo a 3 km de la planta"
+    # Tamizaje anterior a la división: sin «vecinos».
+    viejo = {k: v for k, v in ORGANIZACION.items() if k != "vecinos"}
+    assert "vecinos_detalle" not in contexto_organizacion(viejo)

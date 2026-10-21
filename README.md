@@ -49,6 +49,9 @@ db/
                                   #   inteligente con Gemini) + RLS
   011_consentimiento_datos.sql    # prueba de la autorización de tratamiento
                                   #   de datos (Ley 1581) + RLS
+  012_tamizaje_vecinos_ejemplos.sql  # T5 dividida en T5a (lugares) y T5b
+                                  #   (comunidades o vecinos, columna `vecinos`)
+                                  #   + ejemplos descriptivos del autodiagnóstico
 main.py           # `uvicorn main:app` (reexporta app/main.py)
 ```
 
@@ -81,7 +84,13 @@ psql nexus360 -f db/008_foto_perfil.sql
 psql nexus360 -f db/009_rse_express.sql
 psql nexus360 -f db/010_analisis_ia.sql
 psql nexus360 -f db/011_consentimiento_datos.sql
+psql nexus360 -f db/012_tamizaje_vecinos_ejemplos.sql
 ```
+
+> ⚠️ Si actualizas una base que ya existía, aplica **012 antes de desplegar**
+> esta versión del backend: el tamizaje lee y escribe la columna `vecinos`.
+> Si cargas `db/demo/demo_rse_express.sql`, vuelve a correr 012 después (es
+> idempotente): el demo usa los textos cortos de los ejemplos.
 
 > ⚠️ Si actualizas una base que ya existía, aplica **008 antes de desplegar**
 > esta versión del backend: /me, el login y la lista del admin leen

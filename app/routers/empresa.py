@@ -192,6 +192,7 @@ async def guardar_mi_empresa(
             payload.territorio,
             payload.clientes,
             payload.clientes_detalle,
+            payload.vecinos,
         )
         ciclo_id = await conn.fetchval(
             """
@@ -206,7 +207,7 @@ async def guardar_mi_empresa(
                 UPDATE nexus360.ciclo_tamizaje
                    SET tamano = $2, ingresos_rango = $3, personas = $4, vinculacion = $5,
                        vinculacion_detalle = $6, zonas = $7, territorio = $8, clientes = $9,
-                       clientes_detalle = $10, actualizado_en = now()
+                       clientes_detalle = $10, vecinos = $11, actualizado_en = now()
                  WHERE ciclo_id = $1
                 """,
                 ciclo_id,
@@ -217,8 +218,8 @@ async def guardar_mi_empresa(
                 """
                 INSERT INTO nexus360.ciclo_tamizaje
                     (empresa_id, anio, tamano, ingresos_rango, personas, vinculacion,
-                     vinculacion_detalle, zonas, territorio, clientes, clientes_detalle)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                     vinculacion_detalle, zonas, territorio, clientes, clientes_detalle, vecinos)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                 """,
                 empresa_id,
                 anio_actual,

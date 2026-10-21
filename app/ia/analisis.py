@@ -41,7 +41,7 @@ MENSAJE_MIGRACION = (
 
 SQL_ORGANIZACION = """
     SELECT s.nombre AS sector, e.municipio, e.departamento,
-           t.tamano, t.ingresos_rango, t.personas, t.vinculacion, t.zonas, t.territorio, t.clientes
+           t.tamano, t.ingresos_rango, t.personas, t.vinculacion, t.zonas, t.territorio, t.vecinos, t.clientes
       FROM nexus360.empresa e
       JOIN nexus360.sector s ON s.sector_id = e.sector_id
       JOIN nexus360.ciclo_tamizaje t ON t.ciclo_id = $2

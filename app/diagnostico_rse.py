@@ -16,7 +16,7 @@ FORMATO_RSE = "rse_express"
 
 SQL_TAMIZAJE = """
     SELECT ciclo_id, anio, tamano, ingresos_rango, personas, vinculacion,
-           vinculacion_detalle, zonas, territorio, clientes, clientes_detalle,
+           vinculacion_detalle, zonas, territorio, vecinos, clientes, clientes_detalle,
            actualizado_en
       FROM nexus360.ciclo_tamizaje
      WHERE empresa_id = $1

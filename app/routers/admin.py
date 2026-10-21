@@ -565,7 +565,7 @@ async def listar_empresas_detalle(conn: asyncpg.Connection = Depends(requerir_ad
             e.sector_id, sec.nombre AS sector_nombre,
             e.municipio, e.departamento, e.creado_en,
             uc.anio, uc.tamano, uc.ingresos_rango, uc.personas, uc.vinculacion, uc.vinculacion_detalle,
-            uc.zonas, uc.territorio, uc.clientes, uc.clientes_detalle,
+            uc.zonas, uc.territorio, uc.vecinos, uc.clientes, uc.clientes_detalle,
             CASE WHEN uc.personas IS NULL THEN NULL ELSE uc.personas BETWEEN 10 AND 50 END AS perfil_piloto,
             ud.estado AS diagnostico_estado,
             ud.actualizado_en AS diagnostico_actualizado_en,
@@ -727,7 +727,7 @@ async def actividad_usuario(
     tamizajes = await conn.fetch(
         """
         SELECT c.ciclo_id, c.empresa_id, e.razon_social, c.anio, c.tamano, c.ingresos_rango,
-               c.personas, c.vinculacion, c.zonas, c.territorio, c.clientes,
+               c.personas, c.vinculacion, c.zonas, c.territorio, c.vecinos, c.clientes,
                c.creado_en, c.actualizado_en
           FROM nexus360.ciclo_tamizaje c
           JOIN nexus360.empresa e ON e.empresa_id = c.empresa_id
