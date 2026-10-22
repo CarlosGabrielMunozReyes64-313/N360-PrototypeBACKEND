@@ -29,6 +29,11 @@ app/
   ia/prompts.py      # prompt de Gemini, contexto enviado y huella
   ia/gemini_service.py # cliente google-genai, validación, reintentos, errores
   ia/analisis.py     # guardar/reutilizar, límite por hora, llamadas simultáneas
+  ia/asistente.py    # asistente de la empresa (chatbot): instrucciones,
+                     #   contrato y respuesta en streaming
+  ia/asistente_conocimiento.py # base de conocimiento del asistente
+                     #   (GENERADA desde los datos del front)
+  routers/asistente.py # POST /asistente/mensajes (NDJSON por partes)
 db/
   001_schema.sql          # copia de nexus360_schema.sql
   002_role_password.sql   # fija password del rol nexus360_app (dev)
@@ -567,6 +572,99 @@ llegue a los logs. La de integración prueba contra PostgreSQL la
 reutilización, la regeneración, el RLS entre empresas, Gemini caído, la
 ausencia de clave y la falta de la migración 010 (esta última requiere
 `N360_DB_DUENO=<conexión del dueño>`). Ninguna llama a Google ni gasta cuota.
+
+
+## Asistente de la empresa (chatbot)
+
+El personaje flotante del front (solo cuentas `empresa`) abre un chat que
+guía en el tamizaje y en el Autodiagnóstico RSE Express. Usa la misma
+`GEMINI_API_KEY` del análisis inteligente; no necesita migración.
+
+### Ruta
+
+`POST /api/asistente/mensajes` (Bearer token, rol `empresa`; una cuenta
+admin recibe 403 `PROHIBIDO`).
+
+```json
+{
+  "mensajes": [{"rol": "usuario", "texto": "¿Qué marco si no hay vecinos cerca?"}],
+  "contexto": {"paso": "tamizaje", "materia": null}
+}
+```
+
+La respuesta es NDJSON y llega por partes, a medida que Gemini escribe:
+
+```
+{"tipo":"texto","texto":"Marca «No hay comunidades "}
+{"tipo":"texto","texto":"ni vecinos cerca»…"}
+{"tipo":"fin"}
+```
+
+`fin` llega siempre al final: el front lo usa para saber que la respuesta
+está completa (ahí el personaje deja de hablar). Si Gemini se corta a mitad,
+antes de `fin` llega `{"tipo":"error","codigo":"IA_NO_DISPONIBLE","mensaje":"…"}`.
+Los errores que se conocen antes de empezar llegan como en el resto de la
+API, con estado HTTP y `{codigo, mensaje}`: 401, 403, 422 `VALIDACION`,
+429 `IA_LIMITE` (tope por hora), 503 `IA_NO_CONFIGURADA` o `IA_NO_DISPONIBLE`.
+Por eso la ruta espera la primera parte de Gemini antes de responder.
+
+Si hay un proxy delante (nginx), la respuesta ya trae
+`X-Accel-Buffering: no` para que no junte las partes.
+
+### Qué se le envía a Gemini
+
+* Las instrucciones y la base de conocimiento (`app/ia/asistente_conocimiento.py`).
+* Los últimos 12 mensajes de la conversación (el saludo del front no viaja).
+* En qué pantalla está la persona: el paso y, en el cuestionario, el número de
+  la materia abierta. Se valida contra una lista cerrada y se pega a la última
+  pregunta, no a las instrucciones: así las instrucciones son siempre
+  idénticas y Gemini puede reutilizarlas en caché.
+* **No** se envían las respuestas del diagnóstico, la razón social, el NIT ni
+  datos de la cuenta. El asistente explica cómo responder; no analiza
+  resultados.
+
+Lo que la persona escribe en el chat sí viaja a Google. **Antes de
+producción**, la Política de Tratamiento de Datos debe mencionar esta
+finalidad (hoy solo menciona el análisis inteligente); el chat muestra el
+aviso «No escribas datos personales».
+
+### Reglas del asistente
+
+Responde en español, tuteando y en pocas frases; solo con la base de
+conocimiento (si algo no está, lo dice y sugiere consultar con NEXUS); no
+elige la etapa de «¿En qué punto está?» por la empresa; no habla de puntajes;
+no da asesoría legal; redirige lo que no tiene que ver con el diagnóstico.
+Ver `INSTRUCCIONES_ASISTENTE` en `app/ia/asistente.py`.
+
+### Base de conocimiento
+
+`app/ia/asistente_conocimiento.py` es un archivo **generado** desde los datos
+del front (`src/data/tamizaje.ts`, `escala.ts`, `rseExpress.ts` y
+`glosario.ts`). Si cambia una pregunta, una opción o una ayuda, se regenera
+desde el repo del front y se sube `VERSION_ASISTENTE`:
+
+```bash
+node scripts/generar-conocimiento-asistente.mjs ../N360-PrototypeBACKEND-main/app/ia/asistente_conocimiento.py
+```
+
+No incluye lo que es de uso interno de NEXUS (propósito de cada pregunta,
+arquetipos, pesos, lectura numérica 0–4 ni alternativas de la matriz).
+
+### Configuración
+
+Variables opcionales: `ASISTENTE_MAX_MENSAJES_POR_HORA` (40 por usuario;
+contador propio, no comparte el del análisis) y `ASISTENTE_TIMEOUT_SEGUNDOS`
+(45: tiempo máximo para terminar una respuesta). El modelo es el mismo
+`GEMINI_MODEL`.
+
+### Pruebas
+
+`tests/test_asistente.py` (sin red ni base): contrato de entrada, que el
+saludo no viaje y los roles alternen, el contexto de pantalla, que el
+conocimiento no traiga lo interno de NEXUS, el streaming con el SDK real
+sobre un transporte HTTP simulado (clave solo en cabecera, partes en orden,
+respuesta vacía, fallos de Gemini sin filtrar la clave, tiempo agotado) y la
+ruta (NDJSON hasta `fin`, errores antes de empezar, tope por hora, token).
 
 
 ## Autorización de tratamiento de datos (011)

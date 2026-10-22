@@ -127,6 +127,15 @@ class ServicioGemini:
         texto = str(texto)
         return texto.replace(self._clave, "***") if self._clave else texto
 
+    # El asistente (app/ia/asistente.py) reutiliza este cliente: mismas
+    # conexiones HTTP, misma clave y el mismo saneamiento de los logs.
+    @property
+    def cliente(self) -> Any:
+        return self._cliente
+
+    def sanear(self, texto: Any) -> str:
+        return self._sanear(texto)
+
     async def analizar(self, contexto: dict, materias_aplicables: set[str]) -> AnalisisIA:
         contenido = mensaje_usuario(contexto)
         comienzo = time.monotonic()

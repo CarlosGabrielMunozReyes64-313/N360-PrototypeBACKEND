@@ -12,7 +12,7 @@ from .db import crear_pool
 from .errors import ApiError
 from .esquema import CODIGO_ESQUEMA, ERRORES_DE_ESQUEMA, MENSAJE_ESQUEMA, verificar_esquema
 from .ia.gemini_service import MENSAJE_SIN_SDK, SDK_DISPONIBLE, cerrar_servicio
-from .routers import admin, auth, empresa, usuarios
+from .routers import admin, asistente, auth, empresa, usuarios
 
 logger = logging.getLogger("nexus360")
 # uvicorn solo configura sus propios loggers: sin esto, los mensajes
@@ -108,6 +108,7 @@ app.include_router(auth.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
 app.include_router(empresa.router, prefix="/api")
 app.include_router(usuarios.router, prefix="/api")
+app.include_router(asistente.router, prefix="/api")
 
 
 @app.exception_handler(ApiError)

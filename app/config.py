@@ -58,6 +58,15 @@ class Settings(BaseSettings):
     # cuentan). Protege la cuota gratuita frente a abusos o errores del front.
     ia_max_generaciones_por_hora: int = 6
 
+    # --- Asistente de la empresa (chatbot, usa la misma GEMINI_API_KEY) ----
+    # Tope de mensajes por usuario y por hora. Cada pregunta es una llamada
+    # corta a Gemini; el tope evita que un error del front o un abuso agote
+    # la cuota que también usa el análisis inteligente.
+    asistente_max_mensajes_por_hora: int = 40
+    # Tiempo máximo para terminar una respuesta (las respuestas son cortas;
+    # suelen tardar de 2 a 8 s).
+    asistente_timeout_segundos: float = 45.0
+
     @property
     def gemini_configurado(self) -> bool:
         return bool(self.gemini_api_key and self.gemini_api_key.get_secret_value().strip())

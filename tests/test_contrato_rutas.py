@@ -11,7 +11,7 @@ from app.main import app
 
 # Cada entrada es (método, ruta) tal como la llama el frontend.
 # Fuente: src/auth/api.ts, src/auth/adminApi.ts, src/auth/empresaApi.ts,
-# src/auth/analisisIaApi.ts,
+# src/auth/analisisIaApi.ts, src/auth/asistenteApi.ts,
 # src/perfil/fotoCache.ts
 RUTAS_QUE_USA_EL_FRONT = [
     ("POST", "/api/auth/register"),
@@ -22,6 +22,7 @@ RUTAS_QUE_USA_EL_FRONT = [
     ("PUT", "/api/empresa/mio"),
     ("PUT", "/api/empresa/mio/diagnosticos/{formato_id}/respuestas"),
     ("POST", "/api/empresa/mio/diagnosticos/{formato_id}/analisis-ia"),
+    ("POST", "/api/asistente/mensajes"),
     ("PATCH", "/api/auth/me"),
     ("POST", "/api/auth/change-password"),
     ("PUT", "/api/auth/me/foto"),
