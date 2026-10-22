@@ -8,6 +8,7 @@ from ..db import SQL_FOTO_ACTUALIZADA_EN, fijar_usuario_actual, get_conn
 from ..errors import ApiError, desde_postgres
 from ..esquema import CODIGO_ESQUEMA, MENSAJE_SIN_011
 from ..imagenes import MAX_BYTES_ENTRADA, ImagenInvalida, procesar_foto_perfil
+from ..recaptcha import requerir_recaptcha
 from ..schemas import (
     ActualizarPerfilIn, CambiarPasswordIn, LoginIn, MeOut, RegistroIn, SesionOut, UsuarioOut,
 )
@@ -41,6 +42,8 @@ async def _usuario_actual(conn: asyncpg.Connection, usuario_id) -> UsuarioOut:
 async def register(
     payload: RegistroIn,
     request: Request,
+    # reCAPTCHA va antes que get_conn: se verifica sin ocupar una conexión.
+    _recaptcha: None = Depends(requerir_recaptcha("registro")),
     conn: asyncpg.Connection = Depends(get_conn),
 ):
     # 1) Alta vía registrar_usuario() — hashea con pgcrypto, valida
@@ -83,6 +86,9 @@ async def register(
 async def login(
     payload: LoginIn,
     request: Request,
+    # Si reCAPTCHA rechaza, el intento no llega a iniciar_sesion(): no suma
+    # al bloqueo por intentos fallidos de la cuenta.
+    _recaptcha: None = Depends(requerir_recaptcha("login")),
     conn: asyncpg.Connection = Depends(get_conn),
 ):
     return await _iniciar_sesion_y_responder(conn, payload.email, payload.password, request)

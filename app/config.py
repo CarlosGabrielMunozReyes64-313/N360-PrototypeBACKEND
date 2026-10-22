@@ -67,9 +67,28 @@ class Settings(BaseSettings):
     # suelen tardar de 2 a 8 s).
     asistente_timeout_segundos: float = 45.0
 
+    # --- reCAPTCHA v3 (registro e inicio de sesión) -----------------------
+    # Clave secreta «legacy» de la consola de reCAPTCHA (la del sitio va en el
+    # .env del front como VITE_RECAPTCHA_SITE_KEY). Sin clave, la
+    # verificación queda apagada y el arranque lo avisa. Ver app/recaptcha.py.
+    recaptcha_secret_key: SecretStr | None = None
+    # Puntaje mínimo (0.0 = bot, 1.0 = persona) por acción. El login es más
+    # tolerante: un falso positivo ahí deja por fuera a una empresa real.
+    recaptcha_umbral_registro: float = 0.5
+    recaptcha_umbral_login: float = 0.3
+    # true = solo registra en el log lo que se habría rechazado, sin
+    # bloquear. Recomendado las primeras semanas para fijar los umbrales.
+    recaptcha_solo_observar: bool = False
+    # Espera máxima de la respuesta de Google; si no llega, se deja pasar.
+    recaptcha_timeout_segundos: float = 5.0
+
     @property
     def gemini_configurado(self) -> bool:
         return bool(self.gemini_api_key and self.gemini_api_key.get_secret_value().strip())
+
+    @property
+    def recaptcha_configurado(self) -> bool:
+        return bool(self.recaptcha_secret_key and self.recaptcha_secret_key.get_secret_value().strip())
 
     @property
     def cors_origins(self) -> list[str]:

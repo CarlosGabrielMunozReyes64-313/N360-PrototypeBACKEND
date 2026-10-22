@@ -14,3 +14,6 @@ pillow>=11.0
 # Análisis inteligente del diagnóstico: SDK oficial de Google para la
 # Gemini API. La clave (GEMINI_API_KEY) vive solo en el .env del backend.
 google-genai>=2.25
+# Verificación de reCAPTCHA v3 con Google (app/recaptcha.py). Ya llegaba
+# como dependencia de google-genai; se declara porque se usa directamente.
+httpx>=0.28

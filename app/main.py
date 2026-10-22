@@ -39,6 +39,15 @@ async def lifespan(app: FastAPI):
             "GEMINI_API_KEY no está configurada: el análisis inteligente queda deshabilitado; "
             "el diagnóstico y el PDF funcionan normalmente."
         )
+    if not get_settings().recaptcha_configurado:
+        logger.warning(
+            "RECAPTCHA_SECRET_KEY no está configurada: el registro y el inicio de sesión "
+            "funcionan sin reCAPTCHA."
+        )
+    elif get_settings().recaptcha_solo_observar:
+        logger.info("reCAPTCHA v3 en modo «solo observar»: registra puntajes sin bloquear.")
+    else:
+        logger.info("reCAPTCHA v3 activo en el registro y el inicio de sesión.")
     try:
         yield
     finally:
@@ -152,6 +161,10 @@ async def salud(request: Request):
         "estado": "ok", "db": "ok", "esquema": "ok",
         # Sin 011 el registro de cuentas nuevas queda bloqueado (ver esquema.py).
         "consentimiento_datos": "ok" if esquema.get("consentimiento_datos") else "falta_011",
+        "recaptcha": (
+            "sin_clave" if not get_settings().recaptcha_configurado
+            else "solo_observar" if get_settings().recaptcha_solo_observar else "activo"
+        ),
         # Informativo: el análisis IA es opcional y nunca tumba el servicio.
         "analisis_ia": {
             "tabla": "ok" if esquema.get("analisis_ia") else "falta_010",
