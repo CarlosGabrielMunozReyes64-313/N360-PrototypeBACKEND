@@ -16,5 +16,17 @@ services:
       # `docker compose down -v` para que vuelvan a correr.
       - ./db:/docker-entrypoint-initdb.d
 
+  # Servidor de correo FALSO para desarrollo: atrapa todo lo que el backend
+  # envía por SMTP (puerto 1025) y lo muestra en http://localhost:8025.
+  # Nada sale a internet. Ver «Recuperación de contraseña (013)» en el README.
+  mailpit:
+    image: axllent/mailpit:v1.30.0
+    restart: unless-stopped
+    ports:
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # bandeja web + API
+    environment:
+      MP_MAX_MESSAGES: 500
+
 volumes:
   nexus360_pgdata:

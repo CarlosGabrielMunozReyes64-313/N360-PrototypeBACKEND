@@ -81,6 +81,52 @@ class Settings(BaseSettings):
     recaptcha_solo_observar: bool = False
     # Espera máxima de la respuesta de Google; si no llega, se deja pasar.
     recaptcha_timeout_segundos: float = 5.0
+    # «¿Olvidaste tu contraseña?» manda correos: un bot que la abuse llena
+    # buzones ajenos y gasta la cuota del proveedor. Mismo rigor que el registro.
+    recaptcha_umbral_recuperacion: float = 0.5
+
+    # --- Recuperación de contraseña por correo (013) -----------------------
+    # URL pública del FRONT, de donde sale el enlace del correo
+    # (FRONTEND_URL/#/restablecer?token=...). Se lee de aquí y NUNCA de las
+    # cabeceras de la petición (Host, Origin): esas las controla quien llama,
+    # y un atacante podría hacer que el enlace apunte a su propio sitio.
+    frontend_url: str = "http://localhost:5173"
+    # Minutos que dura un enlace. La base lo acota entre 5 y 120.
+    recuperacion_minutos: int = 30
+
+    # Cómo sale el correo: "smtp", "brevo" o vacío (apagado: el endpoint
+    # responde 503 CORREO_NO_CONFIGURADO y el resto de la app funciona igual).
+    #  * smtp: cualquier servidor SMTP. En desarrollo, Mailpit
+    #    (docker compose up -d) en localhost:1025 sin seguridad.
+    #  * brevo: API HTTPS de Brevo. Úsela si el backend corre en un plan que
+    #    bloquea los puertos SMTP (p. ej. Render gratis).
+    correo_proveedor: str = ""
+    correo_remitente: str = ""                  # p. ej. no-responder@tudominio.co
+    correo_remitente_nombre: str = "NEXUS 360°"
+    correo_timeout_segundos: float = 15.0
+
+    smtp_host: str = "localhost"
+    smtp_port: int = 1025
+    smtp_usuario: str = ""
+    smtp_password: SecretStr | None = None
+    # "starttls" (puerto 587), "ssl" (puerto 465) o "ninguna" (solo Mailpit/local).
+    smtp_seguridad: str = "ninguna"
+
+    brevo_api_key: SecretStr | None = None
+
+    @property
+    def correo_configurado(self) -> bool:
+        if not self.correo_remitente.strip():
+            return False
+        if self.correo_proveedor == "smtp":
+            return bool(self.smtp_host.strip())
+        if self.correo_proveedor == "brevo":
+            return bool(self.brevo_api_key and self.brevo_api_key.get_secret_value().strip())
+        return False
+
+    @property
+    def frontend_base(self) -> str:
+        return self.frontend_url.strip().rstrip("/")
 
     @property
     def gemini_configurado(self) -> bool:

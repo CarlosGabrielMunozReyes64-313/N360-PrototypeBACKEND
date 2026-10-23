@@ -1,16 +1,22 @@
+import ipaddress
 import logging
+import re
 
 import asyncpg
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Request, status
 from starlette.concurrency import run_in_threadpool
 
+from ..config import get_settings
+from ..correo import correo_password_cambiada, correo_recuperacion, enviar_sin_fallar
 from ..db import SQL_FOTO_ACTUALIZADA_EN, fijar_usuario_actual, get_conn
 from ..errors import ApiError, desde_postgres
-from ..esquema import CODIGO_ESQUEMA, MENSAJE_SIN_011
+from ..esquema import CODIGO_ESQUEMA, MENSAJE_SIN_011, MENSAJE_SIN_013
 from ..imagenes import MAX_BYTES_ENTRADA, ImagenInvalida, procesar_foto_perfil
 from ..recaptcha import requerir_recaptcha
 from ..schemas import (
-    ActualizarPerfilIn, CambiarPasswordIn, LoginIn, MeOut, RegistroIn, SesionOut, UsuarioOut,
+    ActualizarPerfilIn, CambiarPasswordIn, LoginIn, MeOut, RecuperacionSolicitadaOut,
+    RecuperarPasswordIn, RegistroIn, RestablecerPasswordIn, SesionOut, TokenRecuperacionIn,
+    TokenRecuperacionOut, UsuarioOut,
 )
 from ..security import obtener_ip, obtener_user_agent, requerir_token
 
@@ -234,6 +240,152 @@ async def cambiar_password(
         except asyncpg.PostgresError as exc:
             raise desde_postgres(exc) from exc
 
+    return None
+
+
+# ---------------------------------------------------------------------
+# Recuperación de contraseña por correo (013)
+# ---------------------------------------------------------------------
+# 1. POST /recuperar-password            {email}            -> 202, siempre igual
+# 2. POST /recuperar-password/verificar  {token}            -> {valido}
+# 3. POST /restablecer-password          {token, password}  -> 204
+#
+# El token nunca viaja en la ruta ni en la query de la API (quedaría en los
+# logs de acceso de uvicorn y del proxy): siempre en el cuerpo JSON. En el
+# enlace del correo va después del «#», que el navegador no le manda a
+# ningún servidor.
+
+TOKEN_RE = re.compile(r"[0-9a-f]{64}")
+
+MENSAJE_RECUPERACION = (
+    "Si el correo está registrado, te enviamos un enlace para restablecer la contraseña. "
+    "Revisa también la carpeta de spam."
+)
+
+
+def _sin_013() -> ApiError:
+    logger.error(MENSAJE_SIN_013)
+    return ApiError(
+        status.HTTP_503_SERVICE_UNAVAILABLE, CODIGO_ESQUEMA,
+        "La recuperación de contraseña está deshabilitada temporalmente por mantenimiento. "
+        "Intente más tarde.",
+    )
+
+
+def _ip_valida(request: Request) -> str | None:
+    """La IP va a una columna INET: algo que no sea una IP (una cabecera
+    X-Forwarded-For inventada, el host «testclient» de las pruebas) se
+    guarda como NULL en lugar de tumbar la petición con un 500."""
+    ip = obtener_ip(request)
+    try:
+        return str(ipaddress.ip_address(ip)) if ip else None
+    except ValueError:
+        return None
+
+
+async def requerir_correo() -> None:
+    """Sin proveedor de correo no hay cómo mandar el enlace. Se revisa antes
+    de reCAPTCHA y de pedir conexión a la base. La respuesta es la misma para
+    cualquier correo, así que no revela nada sobre las cuentas."""
+    if not get_settings().correo_configurado:
+        raise ApiError(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "CORREO_NO_CONFIGURADO",
+            "La recuperación de contraseña por correo no está disponible en este momento. "
+            "Contacta al administrador de la plataforma.",
+        )
+
+
+@router.post(
+    "/recuperar-password",
+    response_model=RecuperacionSolicitadaOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def solicitar_recuperacion(
+    payload: RecuperarPasswordIn,
+    request: Request,
+    tareas: BackgroundTasks,
+    # Orden a propósito: correo -> reCAPTCHA -> conexión a la base.
+    _correo: None = Depends(requerir_correo),
+    _recaptcha: None = Depends(requerir_recaptcha("recuperacion")),
+    conn: asyncpg.Connection = Depends(get_conn),
+):
+    """Responde SIEMPRE lo mismo, exista o no la cuenta: así nadie puede usar
+    este formulario para averiguar qué correos están registrados. El correo
+    sale en segundo plano, DESPUÉS de responder, para que el tiempo de
+    respuesta tampoco delate si había cuenta."""
+    settings = get_settings()
+    try:
+        fila = await conn.fetchrow(
+            "SELECT * FROM nexus360.solicitar_recuperacion_password($1, $2, $3, $4)",
+            payload.email, _ip_valida(request),
+            (obtener_user_agent(request) or "")[:500] or None,
+            settings.recuperacion_minutos,
+        )
+    except (asyncpg.UndefinedFunctionError, asyncpg.UndefinedTableError) as exc:
+        raise _sin_013() from exc
+
+    if fila is not None:
+        # FRONTEND_URL sale de la configuración, NUNCA de Host/Origin.
+        enlace = f"{settings.frontend_base}/#/restablecer?token={fila['token']}"
+        minutos = max(5, min(120, settings.recuperacion_minutos))
+        tareas.add_task(
+            enviar_sin_fallar,
+            correo_recuperacion(fila["nombre"], fila["email"], enlace, minutos),
+            "recuperación de contraseña",
+        )
+
+    return RecuperacionSolicitadaOut(mensaje=MENSAJE_RECUPERACION)
+
+
+@router.post("/recuperar-password/verificar", response_model=TokenRecuperacionOut)
+async def verificar_token_recuperacion(
+    payload: TokenRecuperacionIn,
+    conn: asyncpg.Connection = Depends(get_conn),
+):
+    """¿El enlace sigue sirviendo? No lo gasta. El front lo pregunta al abrir
+    el enlace, para avisar «ya venció» antes de que la persona escriba nada."""
+    token = payload.token.strip().lower()
+    if not TOKEN_RE.fullmatch(token):
+        return TokenRecuperacionOut(valido=False)
+    try:
+        valido = await conn.fetchval("SELECT nexus360.verificar_token_recuperacion($1)", token)
+    except (asyncpg.UndefinedFunctionError, asyncpg.UndefinedTableError) as exc:
+        raise _sin_013() from exc
+    return TokenRecuperacionOut(valido=bool(valido))
+
+
+@router.post("/restablecer-password", status_code=status.HTTP_204_NO_CONTENT)
+async def restablecer_password(
+    payload: RestablecerPasswordIn,
+    tareas: BackgroundTasks,
+    conn: asyncpg.Connection = Depends(get_conn),
+):
+    """Cambia la contraseña con el token del correo. restablecer_password()
+    gasta el token, anula los demás, desbloquea la cuenta y cierra TODAS sus
+    sesiones, en una sola transacción. No inicia sesión automáticamente: la
+    persona entra por el login normal con la contraseña nueva."""
+    token = payload.token.strip().lower()
+    if not TOKEN_RE.fullmatch(token):
+        raise ApiError(
+            status.HTTP_400_BAD_REQUEST, "TOKEN_INVALIDO",
+            "El enlace de recuperación no es válido o ya expiró",
+        )
+    try:
+        fila = await conn.fetchrow(
+            "SELECT * FROM nexus360.restablecer_password($1, $2)", token, payload.password_nueva,
+        )
+    except (asyncpg.UndefinedFunctionError, asyncpg.UndefinedTableError) as exc:
+        raise _sin_013() from exc
+    except asyncpg.PostgresError as exc:
+        raise desde_postgres(exc) from exc
+
+    # Aviso al dueño de la cuenta: si no fue él, se entera de inmediato.
+    if fila is not None and get_settings().correo_configurado:
+        tareas.add_task(
+            enviar_sin_fallar,
+            correo_password_cambiada(fila["nombre"], fila["email"]),
+            "aviso de contraseña cambiada",
+        )
     return None
 
 

@@ -82,6 +82,32 @@ class CambiarPasswordIn(BaseModel):
     password_nueva: str = Field(min_length=8, max_length=200)
 
 
+# ---- Recuperación de contraseña por correo (013) ----
+
+
+class RecuperarPasswordIn(BaseModel):
+    email: EmailStr
+
+
+class TokenRecuperacionIn(BaseModel):
+    # El formato real (64 caracteres hex) se revisa en la ruta, para que un
+    # enlace mal copiado reciba el mismo «enlace no válido» que uno vencido.
+    token: str = Field(max_length=200)
+
+
+class RestablecerPasswordIn(BaseModel):
+    token: str = Field(max_length=200)
+    password_nueva: str = Field(min_length=8, max_length=200)
+
+
+class RecuperacionSolicitadaOut(BaseModel):
+    mensaje: str
+
+
+class TokenRecuperacionOut(BaseModel):
+    valido: bool
+
+
 # ---- Solo para /api/admin/* ----
 
 
@@ -135,9 +161,10 @@ class SesionAdminOut(BaseModel):
     expira_en: datetime
     revocado_en: datetime | None
     # 'logout' (el usuario salió), 'admin' (se la revocaron), 'eliminacion'
-    # (se eliminó la cuenta). None en sesiones vivas y en las cerradas
-    # antes de la migración 006: ese dato no existe y no se inventa.
-    revocado_motivo: Literal["logout", "admin", "eliminacion"] | None = None
+    # (se eliminó la cuenta), 'recuperacion' (restableció la contraseña por
+    # correo, 013). None en sesiones vivas y en las cerradas antes de la
+    # migración 006: ese dato no existe y no se inventa.
+    revocado_motivo: Literal["logout", "admin", "eliminacion", "recuperacion"] | None = None
     ip_origen: str | None
     user_agent: str | None
 

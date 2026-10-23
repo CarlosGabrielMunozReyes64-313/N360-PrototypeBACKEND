@@ -17,9 +17,10 @@ app/
   security.py     # extracción del Bearer token
   schemas.py      # modelos Pydantic (mismo contrato que src/auth/types.ts del front)
   errors.py       # ApiError uniforme {codigo, mensaje}
+  correo.py       # envío de correos (SMTP o API de Brevo) y sus plantillas
   imagenes.py     # normalización de fotos de perfil (Pillow)
   routers/auth.py # POST /register, /login, /logout, GET /me,
-                  #   PUT/DELETE /me/foto
+                  #   PUT/DELETE /me/foto, recuperación de contraseña
   routers/usuarios.py # GET /usuarios/{id}/foto
   routers/admin.py # /admin/usuarios (listar, estado, rol, password,
                    #   DELETE eliminar, POST restaurar) y /admin/sesiones
@@ -57,7 +58,9 @@ db/
   012_tamizaje_vecinos_ejemplos.sql  # T5 dividida en T5a (lugares) y T5b
                                   #   (comunidades o vecinos, columna `vecinos`)
                                   #   + ejemplos descriptivos del autodiagnóstico
-main.py           # `uvicorn main:app` (reexporta app/main.py)
+  013_recuperar_password.sql      # recuperación de contraseña por correo:
+                                  #   tabla de enlaces (solo hashes) + funciones
+          # `uvicorn main:app` (reexporta app/main.py)
 ```
 
 ## 1. Levantar PostgreSQL
@@ -90,6 +93,7 @@ psql nexus360 -f db/009_rse_express.sql
 psql nexus360 -f db/010_analisis_ia.sql
 psql nexus360 -f db/011_consentimiento_datos.sql
 psql nexus360 -f db/012_tamizaje_vecinos_ejemplos.sql
+psql nexus360 -f db/013_recuperar_password.sql
 ```
 
 > ⚠️ Si actualizas una base que ya existía, aplica **012 antes de desplegar**
@@ -149,6 +153,9 @@ directo con estos endpoints:
 | PUT    | `/api/auth/me/foto` | Sube/reemplaza la foto de perfil (cuerpo = imagen en binario) |
 | DELETE | `/api/auth/me/foto` | Quita la foto: vuelve a la predeterminada |
 | GET    | `/api/usuarios/{id}/foto` | Devuelve la foto (la propia, o cualquiera si es admin) |
+| POST   | `/api/auth/recuperar-password` | Envía el enlace de recuperación (responde igual exista o no la cuenta) |
+| POST   | `/api/auth/recuperar-password/verificar` | ¿El enlace sigue sirviendo? (no lo gasta) |
+| POST   | `/api/auth/restablecer-password` | Cambia la contraseña con el enlace y cierra todas las sesiones |
 
 ## Notas de seguridad heredadas del schema
 
@@ -704,3 +711,112 @@ crean cuentas sin prueba de autorización).
 `src/data/politicaDatos.ts` del front, a la vez. Las cuentas existentes
 conservan la versión que aceptaron; pedirles la nueva al iniciar sesión
 todavía no está implementado.
+
+
+## Recuperación de contraseña por correo (013)
+
+«¿Olvidaste tu contraseña?» en el login. La persona escribe su correo, recibe
+un enlace, elige una contraseña nueva y vuelve a entrar por el login normal.
+
+### Cómo funciona
+
+1. `POST /api/auth/recuperar-password {email}` llama a
+   `solicitar_recuperacion_password()`, que genera un token aleatorio de 256
+   bits (`gen_random_bytes(32)`) y guarda **solo su hash SHA-256**. El correo
+   sale en segundo plano con el enlace
+   `FRONTEND_URL/#/restablecer?token=…`. La respuesta es **siempre la misma**
+   (202), exista o no la cuenta, y llega antes de que salga el correo: ni el
+   contenido ni el tiempo de respuesta revelan qué correos están registrados.
+2. El front abre `#/restablecer`, borra el token de la barra de direcciones y
+   pregunta `POST /recuperar-password/verificar {token}` para avisar «el
+   enlace venció» antes de que la persona escriba nada.
+3. `POST /api/auth/restablecer-password {token, password_nueva}` llama a
+   `restablecer_password()`, que en **una sola transacción**: gasta el token,
+   cambia la contraseña (bcrypt, igual que el registro), levanta el bloqueo por
+   intentos fallidos, marca el correo como verificado y **cierra todas las
+   sesiones** de la cuenta (`revocado_motivo = 'recuperacion'`, visible en el
+   panel de admin). Después se envía un aviso «tu contraseña cambió». No
+   inicia sesión automáticamente.
+
+### Reglas de seguridad
+
+- El enlace vence a los `RECUPERACION_MINUTOS` (30 por defecto; la base lo
+  acota entre 5 y 120) y sirve **una sola vez**. Pedir otro anula el anterior.
+- Si la contraseña o el correo cambian por otro camino («Mi cuenta», un admin,
+  `PATCH /auth/me`), los enlaces pendientes se anulan (trigger
+  `trg_anular_recuperaciones`).
+- Límites: 3 enlaces por cuenta y por hora, 10 por IP y por hora. Pasado el
+  límite la respuesta sigue siendo la misma, solo que no sale correo. Además,
+  la ruta pasa por reCAPTCHA (acción `recuperacion`) si está configurado.
+- Cuentas desactivadas o eliminadas no reciben enlace ni pueden usar uno pendiente.
+- `nexus360_app` no tiene ningún acceso a la tabla `recuperacion_password`
+  (RLS sin políticas, como `sesion`): todo pasa por funciones `SECURITY DEFINER`.
+- Dos envíos simultáneos del mismo enlace: `FOR UPDATE` hace que solo uno gane.
+- El token nunca viaja en la URL de la API (quedaría en los logs de acceso):
+  siempre en el cuerpo JSON. En el enlace va después del `#`, que el navegador
+  no manda a ningún servidor. Ni el enlace ni el token se escriben en el log;
+  del destinatario solo queda `a***@dominio`.
+- El enlace se arma con `FRONTEND_URL`, **nunca** con las cabeceras `Host` u
+  `Origin` de la petición (un atacante podría hacer que apunte a su sitio).
+
+**Limitación conocida:** `obtener_ip()` confía en `X-Forwarded-For` tal como
+llega. Detrás del proxy de Render/Railway eso es correcto, pero si el backend
+quedara expuesto directamente, alguien podría inventar esa cabecera y saltarse
+el límite por IP (no el límite por cuenta ni reCAPTCHA).
+
+### Configuración
+
+Variables nuevas (ver `.env.example`):
+
+| Variable | Para qué |
+|---|---|
+| `FRONTEND_URL` | URL pública del front; de aquí sale el enlace. En producción, con `https://`. |
+| `RECUPERACION_MINUTOS` | Vigencia del enlace (30). |
+| `CORREO_PROVEEDOR` | `smtp`, `brevo` o vacío (apagado: la ruta responde 503 `CORREO_NO_CONFIGURADO`). |
+| `CORREO_REMITENTE`, `CORREO_REMITENTE_NOMBRE` | Remitente de los correos. |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_SEGURIDAD`, `SMTP_USUARIO`, `SMTP_PASSWORD` | Para `smtp`. `SMTP_SEGURIDAD`: `starttls` (587), `ssl` (465) o `ninguna` (solo Mailpit). |
+| `BREVO_API_KEY` | Para `brevo`. |
+| `RECAPTCHA_UMBRAL_RECUPERACION` | Puntaje mínimo de reCAPTCHA (0.5). |
+
+**Importante si despliegas en Render gratis:** desde septiembre de 2025 los
+servicios gratuitos de Render bloquean los puertos SMTP (25, 465 y 587), así
+que `smtp` no funciona ahí. Usa `CORREO_PROVEEDOR=brevo`, que envía por HTTPS:
+crea una cuenta en Brevo, verifica el correo remitente (Settings → Senders) y
+genera una API key (Settings → SMTP & API → API Keys). Si tienes activado el
+seguimiento de clics en Brevo, desactívalo: reescribiría el enlace (con el
+token) a través de sus servidores.
+
+`/health` muestra el estado en `recuperacion_password`: `tabla` (`ok` o
+`falta_013`) y `correo` (el proveedor o `sin_configurar`).
+
+### Cómo probarlo
+
+**A mano, en local, sin mandar correos reales.** `docker compose up -d`
+levanta también **Mailpit**, un servidor de correo falso que atrapa todo:
+
+1. Aplica la migración: `psql nexus360 -f db/013_recuperar_password.sql`
+   (con Docker y un volumen nuevo se aplica sola).
+2. Copia `.env.example` a `.env`: ya viene apuntando a Mailpit.
+3. Arranca el backend y el front, ve al login → «¿Olvidaste tu contraseña?».
+4. Abre **http://localhost:8025**: ahí está el correo. Haz clic en el enlace.
+
+Qué revisar:
+
+- Con un correo que **no** existe, la pantalla dice exactamente lo mismo y en
+  Mailpit no llega nada.
+- El enlace funciona una sola vez; la segunda dice «Este enlace ya no sirve».
+- Pide dos enlaces seguidos: el primero ya no sirve.
+- Abre la app en otro navegador con sesión iniciada, restablece la contraseña,
+  y recarga ese otro navegador: la sesión se cerró.
+- Llega el correo «Tu contraseña de NEXUS 360° cambió».
+- En la barra de direcciones no queda el token después de abrir el enlace.
+
+**Automáticas.** `pytest` corre las que no necesitan base
+(`tests/test_recuperar_password.py`: plantillas, SMTP y Brevo simulados,
+rutas). El flujo completo contra Postgres (vencimiento, reutilización,
+límites, cierre de sesiones, envíos simultáneos):
+
+```bash
+N360_PRUEBAS_DB=1 N360_DB_DUENO=postgresql://postgres@localhost/nexus360 \
+    pytest tests/test_recuperar_password_integracion.py
+```

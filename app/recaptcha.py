@@ -1,4 +1,4 @@
-"""reCAPTCHA v3 en el registro y el inicio de sesión.
+"""reCAPTCHA v3 en el registro, el inicio de sesión y la recuperación de contraseña.
 
 El front pide un token a Google justo al enviar el formulario (acción
 «registro» o «login») y lo manda en la cabecera `X-Recaptcha-Token`. Aquí se
@@ -39,7 +39,7 @@ logger = logging.getLogger("nexus360")
 
 URL_SITEVERIFY = "https://www.google.com/recaptcha/api/siteverify"
 CABECERA = "X-Recaptcha-Token"
-ACCIONES = ("registro", "login")
+ACCIONES = ("registro", "login", "recuperacion")
 
 CODIGO = "RECAPTCHA"
 MENSAJE = (
@@ -55,7 +55,11 @@ def _cliente(timeout: float) -> httpx.AsyncClient:
 
 
 def _umbral(settings: Settings, accion: str) -> float:
-    return settings.recaptcha_umbral_registro if accion == "registro" else settings.recaptcha_umbral_login
+    if accion == "registro":
+        return settings.recaptcha_umbral_registro
+    if accion == "recuperacion":
+        return settings.recaptcha_umbral_recuperacion
+    return settings.recaptcha_umbral_login
 
 
 async def verificar(token: str | None, accion: str, ip: str | None, settings: Settings | None = None) -> None:

@@ -47,7 +47,24 @@ async def lifespan(app: FastAPI):
     elif get_settings().recaptcha_solo_observar:
         logger.info("reCAPTCHA v3 en modo «solo observar»: registra puntajes sin bloquear.")
     else:
-        logger.info("reCAPTCHA v3 activo en el registro y el inicio de sesión.")
+        logger.info("reCAPTCHA v3 activo en el registro, el inicio de sesión y la recuperación de contraseña.")
+    ajustes = get_settings()
+    if ajustes.correo_configurado:
+        logger.info(
+            "Recuperación de contraseña: correos por %s; enlaces hacia %s.",
+            ajustes.correo_proveedor, ajustes.frontend_base,
+        )
+        if not ajustes.frontend_base.startswith("https://") and "localhost" not in ajustes.frontend_base \
+                and "127.0.0.1" not in ajustes.frontend_base:
+            logger.warning(
+                "FRONTEND_URL no usa https (%s): los enlaces de recuperación viajarían sin cifrar.",
+                ajustes.frontend_base,
+            )
+    else:
+        logger.warning(
+            "El envío de correos no está configurado (CORREO_PROVEEDOR / CORREO_REMITENTE): "
+            "«¿Olvidaste tu contraseña?» responderá «no disponible». Todo lo demás funciona igual."
+        )
     try:
         yield
     finally:
@@ -161,6 +178,11 @@ async def salud(request: Request):
         "estado": "ok", "db": "ok", "esquema": "ok",
         # Sin 011 el registro de cuentas nuevas queda bloqueado (ver esquema.py).
         "consentimiento_datos": "ok" if esquema.get("consentimiento_datos") else "falta_011",
+        # Recuperación de contraseña por correo: tabla (013) y proveedor de correo.
+        "recuperacion_password": {
+            "tabla": "ok" if esquema.get("recuperacion_password") else "falta_013",
+            "correo": get_settings().correo_proveedor if get_settings().correo_configurado else "sin_configurar",
+        },
         "recaptcha": (
             "sin_clave" if not get_settings().recaptcha_configurado
             else "solo_observar" if get_settings().recaptcha_solo_observar else "activo"

@@ -31,6 +31,9 @@ def desde_postgres(exc: asyncpg.PostgresError) -> ApiError:
     if "contraseña actual no es correcta" in mensaje:
         return ApiError(status.HTTP_401_UNAUTHORIZED, "CREDENCIALES_INVALIDAS", mensaje)
 
+    if "enlace de recuperación no es válido" in mensaje:
+        return ApiError(status.HTTP_400_BAD_REQUEST, "TOKEN_INVALIDO", mensaje)
+
     if "No hay una sesión activa" in mensaje:
         return ApiError(status.HTTP_401_UNAUTHORIZED, "CREDENCIALES_INVALIDAS", mensaje)
 

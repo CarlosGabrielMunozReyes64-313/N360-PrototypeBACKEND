@@ -25,6 +25,11 @@ MENSAJE_SIN_011 = (
     "esquema y reinicie el backend. El inicio de sesión y el resto de la aplicación funcionan."
 )
 
+MENSAJE_SIN_013 = (
+    "Falta db/013_recuperar_password.sql: «¿Olvidaste tu contraseña?» responderá «no disponible» "
+    "hasta aplicarla con el rol dueño del esquema. El resto de la aplicación funciona normalmente."
+)
+
 # Errores de Postgres que indican una estructura vieja, no un fallo puntual.
 ERRORES_DE_ESQUEMA = (
     asyncpg.UndefinedColumnError,
@@ -34,17 +39,20 @@ ERRORES_DE_ESQUEMA = (
 
 
 async def verificar_esquema(pool: asyncpg.Pool) -> dict:
-    """Devuelve {'ok', 'faltantes', 'analisis_ia', 'consentimiento_datos'}. No
+    """Devuelve {'ok', 'faltantes', 'analisis_ia', 'consentimiento_datos',
+    'recuperacion_password'}. No
     lanza: si no puede comprobar (p. ej. la base no responde), lo reporta
     como faltante.
 
     `analisis_ia` indica si está aplicada db/010_analisis_ia.sql y
     `consentimiento_datos` si lo está db/011. NO afectan a `ok`: sin 010
     todo funciona salvo el análisis inteligente; sin 011, todo salvo el
-    registro de cuentas nuevas (que exige guardar la autorización)."""
+    registro de cuentas nuevas (que exige guardar la autorización); sin 013,
+    todo salvo la recuperación de contraseña por correo."""
     faltantes: list[str] = []
     analisis_ia = False
     consentimiento = False
+    recuperacion = False
     try:
         async with pool.acquire() as conn:
             fila = await conn.fetchrow(
@@ -78,10 +86,16 @@ async def verificar_esquema(pool: asyncpg.Pool) -> dict:
                     EXISTS (SELECT 1 FROM information_schema.tables
                              WHERE table_schema = 'nexus360' AND table_name = 'diagnostico_analisis_ia') AS ia,
                     EXISTS (SELECT 1 FROM information_schema.tables
-                             WHERE table_schema = 'nexus360' AND table_name = 'consentimiento_datos') AS consent
+                             WHERE table_schema = 'nexus360' AND table_name = 'consentimiento_datos') AS consent,
+                    -- OJO: no sirve information_schema aquí. Solo lista tablas sobre
+                    -- las que el rol que pregunta tiene algún privilegio, y
+                    -- nexus360_app no tiene NINGUNO sobre recuperacion_password (a
+                    -- propósito). to_regclass lee pg_catalog, que no depende de eso.
+                    to_regclass('nexus360.recuperacion_password') IS NOT NULL AS recup
                 """
             )
             analisis_ia, consentimiento = bool(tablas["ia"]), bool(tablas["consent"])
+            recuperacion = bool(tablas["recup"])
     except Exception as exc:  # noqa: BLE001 - diagnóstico, nunca debe tumbar el arranque
         faltantes.append(f"no se pudo comprobar ({exc.__class__.__name__})")
 
@@ -96,7 +110,10 @@ async def verificar_esquema(pool: asyncpg.Pool) -> dict:
         )
     if not consentimiento and not faltantes:
         logger.error(MENSAJE_SIN_011)
+    if not recuperacion and not faltantes:
+        logger.warning(MENSAJE_SIN_013)
     return {
         "ok": not faltantes, "faltantes": faltantes,
         "analisis_ia": analisis_ia, "consentimiento_datos": consentimiento,
+        "recuperacion_password": recuperacion,
     }
